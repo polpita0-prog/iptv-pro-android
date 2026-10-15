@@ -1,0 +1,22 @@
+[project]
+name = "iptv_v4_pro"
+version = "4.4.0"
+description = "IPTV V4.4 PRO Remote Cloud"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "flet==0.24.1",
+]
+
+[tool.flet]
+org = "com.iptv.v4pro"
+product = "IPTV V4.4 PRO"
+company = "IPTV Remote Cloud"
+copyright = "Copyright (C) 2026"
+
+[tool.flet.flutter.pubspec.dependency_overrides]
+wakelock_plus = "1.2.8"
+wakelock_plus_platform_interface = "1.2.1"
+package_info_plus = "8.0.2"
+package_info_plus_platform_interface = "3.0.1"
+web = "0.5.1"
