@@ -18,6 +18,41 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Konfiguracja Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Konfiguracja Android SDK i akceptacja licencji
+        uses: android-actions/setup-android@v3
+
+      - name: Akceptacja wszystkich licencji Android SDK i instalacja NDK
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125"
+
+      - name: Konfiguracja Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.27.1"
+          channel: "stable"
+
+      - name: Instalacja Flet i zależności
+        run: |
+          python -m pip install --upgrade pip
+          pip install flet==0.25.2 requests
+
+      - name: Budowanie pliku APK z natywnym odtwarzaczem wideo
+        run: |
+          flet build apk --project "iptv_v4_pro" --description "IPTV V4.4 PRO Remote Cloud" --include-packages flet_video --verbose
+
+      - name: Udostępnij gotowy plik APK do pobrania
+        uses: actions/upload-artifact@v4
+        with:
+          name: IPTV-V4.4-PRO-Android-APK
+          path: build/apk/*.apk
+
       - name: Konfiguracja Java JDK 17 (wymagane przez Android SDK)
         uses: actions/setup-java@v4
         with:
