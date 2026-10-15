@@ -24,7 +24,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Flutter 3.24.3 (wymagany przez Flet 0.24.1)
+      - name: Setup Flutter 3.24.3
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.24.3'
@@ -37,21 +37,55 @@ jobs:
           pip install flet==0.24.1
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Prepare patched Flet 0.24.1 template (Fix wakelock_plus 1.4.0 Gradle bug)
+      - name: Prepare patched Flet template (Fix Gradle & Android TV VLC visibility)
         run: |
           git clone --branch 0.24.1 https://github.com/flet-dev/flet-build-template.git /tmp/flet-template
           cd /tmp/flet-template
           python3 -c '
+          # 1. Naprawa wakelock_plus i package_info_plus w pubspec.yaml
           with open("{{cookiecutter.out_dir}}/pubspec.yaml", "r") as f:
-              content = f.read()
-          content = content.replace("wakelock_plus: ^1.2.5", "wakelock_plus: 1.2.8")
-          content = content.replace("package_info_plus: ^8.0.0", "package_info_plus: 8.0.2")
+              pub = f.read()
+          pub = pub.replace("wakelock_plus: ^1.2.5", "wakelock_plus: 1.2.8")
+          pub = pub.replace("package_info_plus: ^8.0.0", "package_info_plus: 8.0.2")
           with open("{{cookiecutter.out_dir}}/pubspec.yaml", "w") as f:
-              f.write(content)
+              f.write(pub)
+
+          # 2. Odblokowanie widoczności VLC i zewnętrznych odtwarzaczy na Android TV (Android 11+)
+          manifest_path = "{{cookiecutter.out_dir}}/android/app/src/main/AndroidManifest.xml"
+          with open(manifest_path, "r") as f:
+              manifest = f.read()
+
+          queries_patch = """
+              <queries>
+                  <package android:name="org.videolan.vlc" />
+                  <package android:name="com.mxtech.videoplayer.ad" />
+                  <package android:name="com.mxtech.videoplayer.pro" />
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:scheme="vlc" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:scheme="http" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:scheme="https" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:mimeType="video/*" />
+                  </intent>
+              </queries>
+          </manifest>"""
+
+          manifest = manifest.replace("</manifest>", queries_patch)
+          with open(manifest_path, "w") as f:
+              f.write(manifest)
           '
           git config user.email "builder@localhost"
           git config user.name "Builder"
-          git commit -am "Pin wakelock_plus to 1.2.8 and package_info_plus to 8.0.2"
+          git commit -am "Fix Gradle dependencies and add Android TV VLC queries"
 
       - name: Build APK with Flet
         run: |
