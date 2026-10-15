@@ -24,10 +24,10 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Flutter (kompatybilny z Flet 0.24.1)
+      - name: Setup Flutter 3.24.3 (wymagany przez Flet 0.24.1)
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.3'
+          flutter-version: '3.24.3'
           channel: 'stable'
           cache: true
 
@@ -37,9 +37,30 @@ jobs:
           pip install flet==0.24.1
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+      - name: Prepare patched Flet 0.24.1 template (Fix wakelock_plus 1.4.0 Gradle bug)
+        run: |
+          git clone --branch 0.24.1 https://github.com/flet-dev/flet-build-template.git /tmp/flet-template
+          cd /tmp/flet-template
+          python3 -c '
+          with open("{{cookiecutter.out_dir}}/pubspec.yaml", "r") as f:
+              content = f.read()
+          content = content.replace("wakelock_plus: ^1.2.5", "wakelock_plus: 1.2.8")
+          content = content.replace("package_info_plus: ^8.0.0", "package_info_plus: 8.0.2")
+          with open("{{cookiecutter.out_dir}}/pubspec.yaml", "w") as f:
+              f.write(content)
+          '
+          git config user.email "builder@localhost"
+          git config user.name "Builder"
+          git commit -am "Pin wakelock_plus to 1.2.8 and package_info_plus to 8.0.2"
+
       - name: Build APK with Flet
         run: |
-          flet build apk --project "iptv_v4_pro" --description "IPTV V4.4 PRO Remote Cloud" --verbose
+          flet build apk \
+            --project "iptv_v4_pro" \
+            --description "IPTV V4.4 PRO Remote Cloud" \
+            --template /tmp/flet-template \
+            --template-ref 0.24.1 \
+            --verbose
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
