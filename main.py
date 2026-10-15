@@ -1,11 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Client V4.4 PRO - ANDROID TV EDITION (D-Pad Remote + VLC Intent + MediaKit + Cloud)
+IPTV Client V4.4 PRO - ANDROID TV EDITION (Fixed Remote Focus)
 ---------------------------------------------------------------------------------------
-- Pełna obsługa pilota Android TV (strzałki Lewo/Prawo/Góra/Dół przechodzą między oknami).
-- Bezpośrednie uruchamianie zainstalowanego VLC na Android TV przez schemat vlc://.
-- Wbudowany odtwarzacz Flet Video + tryb Auto-VLC.
-- Pełna kompatybilność z dwukierunkowym panelem WWW (ntfy.sh Cloud Sync).
 """
 
 import base64
@@ -107,9 +103,6 @@ def fetch_tmdb_details(title):
     return None
 
 
-# ==========================================
-# KLIENT XTREAM CODES API
-# ==========================================
 class XtreamClient:
 
     def __init__(self, server, username, password):
@@ -168,9 +161,6 @@ class XtreamClient:
         return ""
 
 
-# ==========================================
-# KLIENT LIST M3U / M3U8
-# ==========================================
 class M3UClient:
 
     def __init__(self, source):
@@ -312,9 +302,6 @@ class M3UClient:
         return self.direct_urls.get(stream_id, "")
 
 
-# ==========================================
-# GŁÓWNA APLIKACJA ANDROID TV / FLET
-# ==========================================
 def main(page: ft.Page):
     page.title = "IPTV V4.4 PRO Android TV"
     page.theme_mode = ft.ThemeMode.DARK
@@ -336,7 +323,7 @@ def main(page: ft.Page):
     processed_ids = set(page.client_storage.get("processed_ids") or [])
     auto_vlc_saved = page.client_storage.get("auto_vlc")
     if auto_vlc_saved is None:
-        auto_vlc_saved = True  # Domyślnie na Android TV używaj VLC lub odtwarzacza wbudowanego
+        auto_vlc_saved = True
 
     state = {
         "client": None,
@@ -355,16 +342,14 @@ def main(page: ft.Page):
         "volume": 100,
         "muted": False,
         "auto_vlc": bool(auto_vlc_saved),
-        # Nawigacja pilotem TV:
-        # Strefy (zone): "tabs" (zakładki lewe), "list" (lista kanałów/kategorii), "right" (przyciski prawego okna)
-        "zone": "list",
+        "zone": "list",  # Startujemy od razu na liście w lewym oknie!
         "tab_idx": 0,
         "list_idx": 0,
         "right_idx": 0,
         "page_offset": 0,
     }
 
-    PAGE_SIZE = 60  # Porcjowanie po 60 pozycji zapewnia 0 lagów pilota na Android TV
+    PAGE_SIZE = 60
 
     session = make_session()
     start_ts = int(time.time()) - 180
@@ -433,7 +418,6 @@ def main(page: ft.Page):
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    # --- WBUDOWANY ODTWARZACZ WIDEO ---
     video_player = ft.Video(
         expand=True,
         playlist=[],
@@ -489,20 +473,11 @@ def main(page: ft.Page):
         value=page.client_storage.get("m3u_url") or "",
     )
 
-    # --- FUNKCJA URUCHAMIANIA VLC NA ANDROID TV ---
     def launch_vlc_intent(raw_url: str, title: str = ""):
         if not raw_url:
-            now_playing_txt.value = (
-                "⚠️ Najpierw wybierz kanał z listy po lewej stronie!"
-            )
-            now_playing_txt.update()
             return
         clean_u = raw_url.strip()
-        if clean_u.startswith("vlc://"):
-            vlc_url = clean_u
-        else:
-            vlc_url = f"vlc://{clean_u}"
-
+        vlc_url = clean_u if clean_u.startswith("vlc://") else f"vlc://{clean_u}"
         now_playing_txt.value = (
             f"🚀 Otwieranie w VLC: {title or state['now_playing']}"
         )
@@ -531,7 +506,6 @@ def main(page: ft.Page):
         now_playing_txt.value = f"▶ {title}"
 
         if state["auto_vlc"]:
-            # Bezpośrednie przekazanie strumienia do aplikacji VLC na Android TV
             launch_vlc_intent(url, title)
         else:
             try:
@@ -586,7 +560,6 @@ def main(page: ft.Page):
 
         threading.Thread(target=_w, daemon=True).start()
 
-    # --- PRZYCISKI ZAKŁADEK (LEWE OKNO GÓRA) ---
     btn_tab_live = ft.ElevatedButton(
         "📺 TV", on_click=lambda _: switch_tab("live", 0), expand=True
     )
@@ -598,7 +571,6 @@ def main(page: ft.Page):
     )
     tab_buttons = [btn_tab_live, btn_tab_vod, btn_tab_ser]
 
-    # --- PRZYCISKI PRAWEGO OKNA (NAWIGOWANE PILOTEM) ---
     btn_play_pause = ft.ElevatedButton(
         "⏯ Play/Pauza", on_click=toggle_play_pause
     )
@@ -626,12 +598,25 @@ def main(page: ft.Page):
     list_item_buttons = []
     list_item_actions = []
 
-    # --- PODŚWIETLANIE AKTYWNEGO OKNA I ELEMENTU DLA PILOTA ---
+    left_panel = ft.Container(
+        width=380,
+        bgcolor="#111625",
+        padding=10,
+        border_radius=10,
+        border=ft.border.all(3, "#38bdf8"),
+    )
+    right_panel = ft.Container(
+        expand=True,
+        bgcolor="#111625",
+        padding=10,
+        border_radius=10,
+        border=ft.border.all(1, "#1e293b"),
+    )
+
     def update_focus_styles():
         if not dashboard_view.visible:
             return
 
-        # Obramowanie aktywnego okna (Niebieska ramka wokół okna, w którym jest pilot)
         left_panel.border = ft.border.all(
             3 if state["zone"] in ("tabs", "list") else 1,
             "#38bdf8" if state["zone"] in ("tabs", "list") else "#1e293b",
@@ -641,7 +626,6 @@ def main(page: ft.Page):
             "#38bdf8" if state["zone"] == "right" else "#1e293b",
         )
 
-        # Styl zakładek (TV / Filmy / Seriale)
         for i, b in enumerate(tab_buttons):
             is_focused = state["zone"] == "tabs" and state["tab_idx"] == i
             is_current_kind = (i == 0 and state["kind"] == "live") or (
@@ -654,13 +638,11 @@ def main(page: ft.Page):
             )
             b.color = "black" if is_focused else "white"
 
-        # Styl elementów listy (Kategorie / Kanały)
         for i, b in enumerate(list_item_buttons):
             is_focused = state["zone"] == "list" and state["list_idx"] == i
             b.bgcolor = "#0284c7" if is_focused else "#161d30"
             b.color = "white"
 
-        # Styl przycisków w prawym oknie
         for i, b in enumerate(right_buttons):
             is_focused = state["zone"] == "right" and state["right_idx"] == i
             b.bgcolor = "#f59e0b" if is_focused else "#1e293b"
@@ -668,7 +650,6 @@ def main(page: ft.Page):
 
         page.update()
 
-        # Przewinięcie listy do wybranego elementu
         if state["zone"] == "list" and list_item_buttons:
             idx = max(0, min(state["list_idx"], len(list_item_buttons) - 1))
             try:
@@ -676,7 +657,6 @@ def main(page: ft.Page):
             except Exception:
                 pass
 
-    # --- RENDEROWANIE LISTY KANAŁÓW / KATEGORII ---
     def render_list():
         list_view.controls.clear()
         list_item_buttons.clear()
@@ -703,7 +683,6 @@ def main(page: ft.Page):
 
         btn_idx = 0
 
-        # Przycisk powrotu do kategorii
         if not is_cat and not state["in_fav"]:
             b_back = ft.ElevatedButton(
                 key=f"item_{btn_idx}",
@@ -716,27 +695,9 @@ def main(page: ft.Page):
             list_view.controls.append(b_back)
             btn_idx += 1
 
-        # Paginacja dla maksymalnej płynności pilota
         start = state["page_offset"]
         end = start + PAGE_SIZE
         slice_items = filtered[start:end]
-
-        if start > 0:
-            def _prev_page():
-                state["page_offset"] = max(0, state["page_offset"] - PAGE_SIZE)
-                state["list_idx"] = 0
-                render_list()
-
-            b_prev = ft.ElevatedButton(
-                key=f"item_{btn_idx}",
-                text=f"⬆️ Poprzednie pozycje ({start - PAGE_SIZE + 1} - {start})",
-                height=42,
-                on_click=lambda _: _prev_page(),
-            )
-            list_item_buttons.append(b_prev)
-            list_item_actions.append(_prev_page)
-            list_view.controls.append(b_prev)
-            btn_idx += 1
 
         for local_i, item in enumerate(slice_items):
             real_num = start + local_i + 1
@@ -770,23 +731,6 @@ def main(page: ft.Page):
             list_item_buttons.append(b_item)
             list_item_actions.append(action_fn)
             list_view.controls.append(b_item)
-            btn_idx += 1
-
-        if end < len(filtered):
-            def _next_page():
-                state["page_offset"] = end
-                state["list_idx"] = 0
-                render_list()
-
-            b_next = ft.ElevatedButton(
-                key=f"item_{btn_idx}",
-                text=f"⬇️ Następne pozycje ({end + 1} - {min(end + PAGE_SIZE, len(filtered))} z {len(filtered)})",
-                height=42,
-                on_click=lambda _: _next_page(),
-            )
-            list_item_buttons.append(b_next)
-            list_item_actions.append(_next_page)
-            list_view.controls.append(b_next)
             btn_idx += 1
 
         if state["list_idx"] >= len(list_item_buttons):
@@ -890,17 +834,16 @@ def main(page: ft.Page):
         state["list_idx"] = 0
         state["in_fav"] = False
         state["kind"] = tab_key
+        state["zone"] = "list"
         back_to_cats()
         publish_status()
 
-    # --- OBSŁUGA PILOTA ANDROID TV (STRZAŁKI LEWO/PRAWO/GÓRA/DÓŁ/OK/BACK) ---
     def on_key_event(e: ft.KeyboardEvent):
         if not dashboard_view.visible:
             return
 
         key = e.key
 
-        # Strzałka w PRAWO -> Przejście z lewego okna do prawego okna
         if key == "Arrow Right":
             if state["zone"] == "tabs":
                 if state["tab_idx"] < len(tab_buttons) - 1:
@@ -916,7 +859,6 @@ def main(page: ft.Page):
                     state["right_idx"] += 1
             update_focus_styles()
 
-        # Strzałka w LEWO -> Powrót z prawego okna do lewego okna
         elif key == "Arrow Left":
             if state["zone"] == "right":
                 if state["right_idx"] > 0:
@@ -928,7 +870,6 @@ def main(page: ft.Page):
                     state["tab_idx"] -= 1
             update_focus_styles()
 
-        # Strzałka w DÓŁ
         elif key == "Arrow Down":
             if state["zone"] == "tabs":
                 state["zone"] = "list"
@@ -941,7 +882,6 @@ def main(page: ft.Page):
                     state["right_idx"] += 1
             update_focus_styles()
 
-        # Strzałka w GÓRĘ
         elif key == "Arrow Up":
             if state["zone"] == "list":
                 if state["list_idx"] > 0:
@@ -953,13 +893,10 @@ def main(page: ft.Page):
                     state["right_idx"] -= 1
             update_focus_styles()
 
-        # Przycisk OK / Enter na pilocie TV
         elif key in ("Enter", "Select", " "):
             if state["zone"] == "tabs":
                 kinds = ["live", "vod", "series"]
                 switch_tab(kinds[state["tab_idx"]], state["tab_idx"])
-                state["zone"] = "list"
-                update_focus_styles()
             elif state["zone"] == "list":
                 if 0 <= state["list_idx"] < len(list_item_actions):
                     list_item_actions[state["list_idx"]]()
@@ -980,14 +917,12 @@ def main(page: ft.Page):
                 elif idx == 6:
                     do_logout()
 
-        # Przycisk Wstecz / Backspace -> powrót do kategorii
         elif key in ("Backspace", "Escape"):
             if state["view_mode"] == "streams" and not state["in_fav"]:
                 back_to_cats()
 
     page.on_keyboard_event = on_key_event
 
-    # --- WIDOK LOGOWANIA I WIDOK DASHBOARDU ---
     login_view = ft.Container(expand=True)
     dashboard_view = ft.Container(expand=True, visible=False)
 
@@ -1062,9 +997,6 @@ def main(page: ft.Page):
             page.client_storage.set("device_name", nn)
             page.client_storage.set("device_id", ni)
             header_dev_lbl.value = f"📺 {nn} [{ni}]"
-            status_banner.value = (
-                f"🟢 Zdalny Cloud aktywny — Odbiornik: {nn} | Kod ID: {ni}"
-            )
             dlg.open = False
             page.update()
             publish_status()
@@ -1074,7 +1006,7 @@ def main(page: ft.Page):
             content=ft.Column(
                 [
                     ft.Text(
-                        "Wpisz ten Kod ID w pliku panel_zdalny.html w przeglądarce, aby zdalnie dodawać listy i sterować aplikacją:",
+                        "Wpisz ten Kod ID w pliku panel_zdalny.html w przeglądarce:",
                         size=12,
                     ),
                     name_in,
@@ -1085,11 +1017,7 @@ def main(page: ft.Page):
             ),
             actions=[
                 ft.ElevatedButton(
-                    "💾 Zapisz",
-                    on_click=_save,
-                    bgcolor="#2563eb",
-                    color="white",
-                    autofocus=True,
+                    "💾 Zapisz", on_click=_save, bgcolor="#2563eb", color="white"
                 )
             ],
         )
@@ -1097,7 +1025,6 @@ def main(page: ft.Page):
         dlg.open = True
         page.update()
 
-    # Budowa ekranu logowania
     login_view.content = ft.Column(
         [
             ft.Container(
@@ -1130,7 +1057,6 @@ def main(page: ft.Page):
                             bgcolor="#2563eb",
                             color="white",
                             height=48,
-                            autofocus=True,
                         ),
                     ],
                     spacing=10,
@@ -1146,174 +1072,50 @@ def main(page: ft.Page):
         expand=True,
     )
 
-    # Budowa ekranu głównego (2 kolumny: Lista po lewej + Wideo i sterowanie po prawej)
-    left_panel = ft.Container(
-        width=380,
-        bgcolor="#111625",
-        padding=10,
-        border_radius=10,
-        border=ft.border.all(3, "#38bdf8"),
-        content=ft.Column(
-            [
-                ft.Row(tab_buttons, spacing=4),
-                ft.Row([search_tf]),
-                list_view,
-            ],
-            expand=True,
-        ),
+    left_panel.content = ft.Column(
+        [
+            ft.Row(tab_buttons, spacing=4),
+            ft.Row([search_tf]),
+            list_view,
+        ],
+        expand=True,
     )
 
-    right_panel = ft.Container(
+    right_panel.content = ft.Column(
+        [
+            ft.Row(
+                [
+                    header_dev_lbl,
+                    ft.Row([btn_cloud_id, btn_logout], spacing=6),
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            ),
+            ft.Container(
+                content=video_player,
+                expand=True,
+                bgcolor="black",
+                border_radius=8,
+            ),
+            now_playing_txt,
+            ft.Row(
+                [
+                    btn_vlc,
+                    btn_auto_vlc,
+                    btn_play_pause,
+                    btn_stop,
+                    btn_tmdb,
+                ],
+                spacing=6,
+                wrap=True,
+            ),
+        ],
         expand=True,
-        bgcolor="#111625",
-        padding=10,
-        border_radius=10,
-        border=ft.border.all(1, "#1e293b"),
-        content=ft.Column(
-            [
-                ft.Row(
-                    [
-                        header_dev_lbl,
-                        ft.Row([btn_cloud_id, btn_logout], spacing=6),
-                    ],
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                ),
-                ft.Container(
-                    content=video_player,
-                    expand=True,
-                    bgcolor="black",
-                    border_radius=8,
-                ),
-                now_playing_txt,
-                ft.Row(
-                    [
-                        btn_vlc,
-                        btn_auto_vlc,
-                        btn_play_pause,
-                        btn_stop,
-                        btn_tmdb,
-                    ],
-                    spacing=6,
-                    wrap=True,
-                ),
-            ],
-            expand=True,
-        ),
     )
 
     dashboard_view.content = ft.Row(
         [left_panel, right_panel], expand=True, spacing=10
     )
     page.add(login_view, dashboard_view)
-
-    # --- PĘTLA NASŁUCHU ZDALNYCH ROZKAZÓW Z PRZEGLĄDARKI WWW ---
-    def handle_remote_command(payload):
-        cmd = payload.get("cmd")
-        if cmd == "ping_status":
-            publish_status()
-        elif cmd == "rename_device":
-            new_n = (payload.get("device_name") or "").strip()
-            if new_n:
-                page.client_storage.set("device_name", new_n)
-                cur_id = page.client_storage.get("device_id") or device_id
-                header_dev_lbl.value = f"📺 {new_n} [{cur_id}]"
-                status_banner.value = (
-                    f"🟢 Zdalny Cloud — Odbiornik: {new_n} | Kod ID: {cur_id}"
-                )
-                page.update()
-                publish_status()
-        elif cmd == "add_playlist":
-            prof_name = payload.get("name") or "Zdalna Lista"
-            new_p = {
-                "name": prof_name,
-                "mode": payload.get("mode", "xtream"),
-                "server": (payload.get("server") or "").strip(),
-                "username": (payload.get("username") or "").strip(),
-                "password": payload.get("password") or "",
-                "m3u_url": (payload.get("m3u_url") or "").strip(),
-                "added_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-            }
-            nonlocal profiles
-            profiles = [p for p in profiles if p.get("name") != prof_name]
-            profiles.insert(0, new_p)
-            page.client_storage.set("profiles", profiles)
-
-            if payload.get("auto_connect", True):
-                state["active_profile_name"] = prof_name
-                if new_p["mode"] == "xtream":
-                    srv_tf.value = new_p["server"]
-                    usr_tf.value = new_p["username"]
-                    pas_tf.value = new_p["password"]
-                    m3u_tf.value = ""
-                else:
-                    m3u_tf.value = new_p["m3u_url"]
-                    usr_tf.value = ""
-                    pas_tf.value = ""
-                do_login()
-            else:
-                publish_status()
-        elif cmd == "switch_profile":
-            t_name = payload.get("name")
-            for p in profiles:
-                if p.get("name") == t_name:
-                    state["active_profile_name"] = t_name
-                    if p.get("mode") == "xtream":
-                        srv_tf.value = p.get("server", "")
-                        usr_tf.value = p.get("username", "")
-                        pas_tf.value = p.get("password", "")
-                        m3u_tf.value = ""
-                    else:
-                        m3u_tf.value = p.get("m3u_url", "")
-                        usr_tf.value = ""
-                    do_login()
-                    break
-        elif cmd == "delete_profile":
-            t_name = payload.get("name")
-            profiles = [p for p in profiles if p.get("name") != t_name]
-            page.client_storage.set("profiles", profiles)
-            publish_status()
-        elif cmd == "remote_control":
-            act = payload.get("action")
-            if act == "stop":
-                stop_playback()
-            elif act == "play_pause":
-                toggle_play_pause()
-            elif act == "logout":
-                do_logout()
-
-    def cloud_poll_worker():
-        poll_s = make_session()
-        while True:
-            try:
-                cid = re.sub(
-                    r"[^a-zA-Z0-9_-]",
-                    "",
-                    page.client_storage.get("device_id") or device_id,
-                )
-                url = f"https://ntfy.sh/iptv_v4_pro_{cid}/json?poll=1&since={start_ts}"
-                r = poll_s.get(url, timeout=8)
-                if r.status_code == 200 and r.text.strip():
-                    for line in r.text.strip().splitlines():
-                        try:
-                            ev = json.loads(line)
-                            if ev.get("event") == "message":
-                                payload = json.loads(ev.get("message", ""))
-                                uid = payload.get("msg_uid") or ev.get("id")
-                                if uid not in processed_ids:
-                                    processed_ids.add(uid)
-                                    page.client_storage.set(
-                                        "processed_ids",
-                                        list(processed_ids)[-50:],
-                                    )
-                                    handle_remote_command(payload)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-            time.sleep(3)
-
-    threading.Thread(target=cloud_poll_worker, daemon=True).start()
-    publish_status()
 
 
 ft.app(target=main)
