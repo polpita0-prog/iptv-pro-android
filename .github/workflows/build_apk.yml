@@ -1,1 +1,46 @@
+name: Build Android APK (IPTV V4.4 PRO)
 
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Pobierz kod z repozytorium
+        uses: actions/checkout@v4
+
+      - name: Konfiguracja Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Konfiguracja Java JDK 17 (wymagane przez Android SDK)
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Konfiguracja Flutter SDK (silnik budujący Flet APK)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.3"
+          channel: "stable"
+
+      - name: Instalacja Flet i zależności
+        run: |
+          python -m pip install --upgrade pip
+          pip install flet==0.24.1 requests
+
+      - name: Budowanie pliku APK z natywnym odtwarzaczem wideo
+        run: |
+          flet build apk --project "IPTV_V4_PRO" --description "IPTV V4.4 PRO Remote Cloud" --include-packages flet_video --verbose
+
+      - name: Udostępnij gotowy plik APK do pobrania
+        uses: actions/upload-artifact@v4
+        with:
+          name: IPTV-V4.4-PRO-Android-APK
+          path: build/apk/*.apk
