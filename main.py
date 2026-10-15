@@ -1,14 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Client V4.4 PRO - ANDROID EDITION (Flet + Native MediaKit Video + Cloud Remote)
----------------------------------------------------------------------------------------
-- Natywny interfejs Android / Android TV (2-kolumnowy Dark Navy Dashboard).
-- Wbudowany odtwarzacz wideo Flet Video (MediaKit / libmpv) + uruchamianie VLC na Androidzie.
-- Pełna kompatybilność z dwukierunkowym panelem WWW (ntfy.sh Cloud Sync).
-- Obsługa Xtream Codes API, M3U/M3U8, TMDB PL oraz EPG.
+IPTV Client V4.4 PRO - ANDROID EDITION (Flet + VLC Intent + Two-Way Cloud Remote)
 """
 
-import os
 import re
 import json
 import time
@@ -89,18 +83,6 @@ def fetch_tmdb_details(title):
     return None
 
 
-def decode_epg_text(text):
-    if not text:
-        return ""
-    try:
-        decoded = base64.b64decode(text).decode("utf-8")
-        if all(ord(c) >= 32 or c in "\n\r\t" for c in decoded):
-            return decoded
-    except Exception:
-        pass
-    return text
-
-
 # ==========================================
 # KLIENT XTREAM CODES API
 # ==========================================
@@ -148,9 +130,6 @@ class XtreamClient:
 
     def get_series_info(self, series_id):
         return self._api({"action": "get_series_info", "series_id": series_id})
-
-    def get_short_epg(self, stream_id, limit=5):
-        return self._api({"action": "get_short_epg", "stream_id": stream_id, "limit": limit}, timeout=5)
 
     def build_stream_url(self, kind, stream_id, container_ext="ts", item=None):
         if item and item.get("direct_url"):
@@ -271,9 +250,6 @@ class M3UClient:
     def get_series_info(self, series_id):
         return self.series_map.get(series_id, {"episodes": {}})
 
-    def get_short_epg(self, stream_id, limit=5):
-        return {"epg_listings": []}
-
     def build_stream_url(self, kind, stream_id, container_ext="ts", item=None):
         if item and item.get("direct_url"):
             return item["direct_url"]
@@ -289,7 +265,6 @@ def main(page: ft.Page):
     page.bgcolor = "#0b0e17"
     page.padding = 8
 
-    # Odczyt danych z pamięci urządzenia Android (client_storage)
     device_id = page.client_storage.get("device_id")
     if not device_id:
         device_id = f"android-{uuid.uuid4().hex[:6]}"
@@ -313,12 +288,8 @@ def main(page: ft.Page):
         "now_playing": "Brak aktywnego strumienia",
         "playing_url": "",
         "is_playing": False,
-        "paused": False,
-        "volume": 100,
-        "muted": False,
     }
 
-    # --- USŁUGA CHMUROWA NTFY.SH (KOMPATYBILNA Z PANEL_ZDALNY.HTML) ---
     session = make_session()
     start_ts = int(time.time()) - 180
 
@@ -327,11 +298,7 @@ def main(page: ft.Page):
             try:
                 clean_id = re.sub(r'[^a-zA-Z0-9_-]', '', page.client_storage.get("device_id") or device_id)
                 status_topic = f"iptv_v4_pro_{clean_id}_status"
-                if state["is_playing"]:
-                    st_lbl = "⏸ PAUZA" if state["paused"] else "▶ ODTWARZANIE"
-                else:
-                    st_lbl = "⏹ ZATRZYMANO"
-
+                st_lbl = "▶ ODTWARZANIE" if state["is_playing"] else "⏹ GOTOWY"
                 srv_txt = state["active_profile_name"] if state["client"] else "Ekran logowania"
                 prof_summary = []
                 for p in profiles:
@@ -353,8 +320,8 @@ def main(page: ft.Page):
                     "now_playing": state["now_playing"],
                     "active_server": srv_txt,
                     "current_tab": "ulubione" if state["in_fav"] else state["kind"],
-                    "volume": state["volume"],
-                    "muted": state["muted"],
+                    "volume": 100,
+                    "muted": False,
                     "profiles": prof_summary,
                 }
                 session.post(
@@ -367,91 +334,70 @@ def main(page: ft.Page):
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    # --- KOMPONENT WIDEO (NATYWNY ANDROID MEDIAKIT) ---
-    video_player = ft.Video(
-        expand=True,
-        playlist=[],
-        autoplay=True,
-        volume=100,
-        aspect_ratio=16 / 9,
-        show_controls=True,
-    )
+    # Elementy UI prawego panelu (Podgląd + TMDB + Przycisk VLC)
+    now_playing_txt = ft.Text("Wybierz kanał lub film z listy po lewej stronie", weight=ft.FontWeight.BOLD, size=18, color="white")
+    tmdb_info_txt = ft.Text("Kliknij dowolny kanał lub film, aby zobaczyć polski opis TMDB i uruchomić odtwarzanie w VLC / Odtwarzaczu Android.", size=13, color="#94a3b8")
+    poster_img = ft.Image(src="", width=180, height=260, fit=ft.ImageFit.CONTAIN, visible=False)
 
-    now_playing_txt = ft.Text("▶ Wybierz kanał lub film z listy", weight=ft.FontWeight.BOLD, size=14, color="#60a5fa")
-    header_dev_lbl = ft.Text(f"📺 {device_name} [{device_id}]", size=12, color="#10b981", weight=ft.FontWeight.BOLD)
+    header_dev_lbl = ft.Text(f"📺 {device_name} [{device_id}]", size=13, color="#10b981", weight=ft.FontWeight.BOLD)
     list_view = ft.ListView(expand=True, spacing=6, padding=4)
-    search_tf = ft.TextField(hint_text="Szukaj...", height=40, text_size=13, content_padding=8, expand=True)
+    search_tf = ft.TextField(hint_text="Szukaj kanału lub filmu...", height=40, text_size=13, content_padding=8, expand=True)
     status_banner = ft.Text(f"🟢 Zdalny Cloud aktywny — Kod ID: {device_id}", color="#10b981", size=12)
 
-    # Pola logowania
     srv_tf = ft.TextField(label="Adres serwera (http://serwer:8080)", value=page.client_storage.get("server") or "http://")
     usr_tf = ft.TextField(label="Użytkownik", value=page.client_storage.get("username") or "")
     pas_tf = ft.TextField(label="Hasło", password=True, can_reveal_password=True, value=page.client_storage.get("password") or "")
     m3u_tf = ft.TextField(label="Lub link do listy M3U / M3U8", value=page.client_storage.get("m3u_url") or "")
 
-    def play_stream_url(url, title):
+    def play_stream_url(url, title, icon_url=""):
         state["playing_url"] = url
         state["now_playing"] = title
         state["is_playing"] = True
-        state["paused"] = False
         now_playing_txt.value = f"▶ {title}"
+        tmdb_info_txt.value = "⏳ Ładowanie opisu z bazy TMDB PL i otwieranie odtwarzacza..."
+        if icon_url:
+            poster_img.src = icon_url
+            poster_img.visible = True
+        else:
+            poster_img.visible = False
+        page.update()
+
+        # Uruchomienie strumienia w natywnym odtwarzaczu Android (VLC / MX Player / Wbudowany)
         try:
-            video_player.playlist_clear()
-            video_player.playlist_add(ft.VideoMedia(url))
-            video_player.play()
+            page.launch_url(url)
         except Exception:
             pass
-        page.update()
+
         publish_status()
+
+        def _fetch_meta():
+            tmdb = fetch_tmdb_details(title)
+            if tmdb:
+                if tmdb.get("poster"):
+                    poster_img.src = tmdb["poster"]
+                    poster_img.visible = True
+                tmdb_info_txt.value = (
+                    f"📅 Rok: {tmdb.get('year') or 'Brak'}   |   ⭐ Ocena TMDB: {tmdb.get('rating') or 'Brak'}/10\n\n"
+                    f"{tmdb.get('plot') or 'Brak polskiego opisu.'}"
+                )
+            else:
+                tmdb_info_txt.value = f"Strumień aktywny: {url}\nKliknij 'Otwórz w VLC', jeśli wideo nie wystartowało automatycznie."
+            page.update()
+
+        threading.Thread(target=_fetch_meta, daemon=True).start()
 
     def stop_playback(_e=None):
         state["is_playing"] = False
-        state["paused"] = False
         state["now_playing"] = "Brak aktywnego strumienia"
         now_playing_txt.value = "⏹ Zatrzymano odtwarzanie"
-        try:
-            video_player.stop()
-        except Exception:
-            pass
-        page.update()
-        publish_status()
-
-    def toggle_play_pause(_e=None):
-        try:
-            video_player.play_or_pause()
-            state["paused"] = not state["paused"]
-        except Exception:
-            pass
         page.update()
         publish_status()
 
     def open_in_android_vlc(_e=None):
         if state["playing_url"]:
-            # Na Androidzie otwiera strumień w zewnętrznym VLC lub domyślnym odtwarzaczu wideo
             page.launch_url(state["playing_url"])
 
-    def show_info_dialog(_e=None):
-        title = state["now_playing"]
-        dlg = ft.AlertDialog(
-            title=ft.Text(f"Informacje TMDB: {title}"),
-            content=ft.Text("Pobieranie polskiego opisu z TMDB..."),
-        )
-        page.overlay.append(dlg)
-        dlg.open = True
-        page.update()
-
-        def _w():
-            tmdb = fetch_tmdb_details(title)
-            if tmdb:
-                txt = f"Rok: {tmdb.get('year')}\nOcena: ⭐ {tmdb.get('rating')}/10\n\n{tmdb.get('plot') or 'Brak opisu.'}"
-            else:
-                txt = "Brak danych w bazie TMDB dla tej pozycji."
-            dlg.content = ft.Text(txt)
-            page.update()
-
-        threading.Thread(target=_w, daemon=True).start()
-
-    # --- RENDEROWANIE LISTY KANAŁÓW / KATEGORII ---
+    # --- RENDEROWANIE LISTY ---
     def render_list():
         list_view.controls.clear()
         q = (search_tf.value or "").strip().lower()
@@ -470,7 +416,7 @@ def main(page: ft.Page):
                 ft.ElevatedButton("↩ Wróć do kategorii", on_click=lambda _: back_to_cats(), bgcolor="#1e293b", color="#60a5fa")
             )
 
-        for idx, item in enumerate(filtered[:250]):  # Limit 250 dla płynności na TV Boxach
+        for idx, item in enumerate(filtered[:250]):
             if is_cat:
                 cat_name = item.get("category_name", "Kategoria")
                 list_view.controls.append(
@@ -541,6 +487,7 @@ def main(page: ft.Page):
     def on_stream_click(item):
         k = item.get("kind") or state["kind"]
         title = item.get("name") or item.get("title") or "Strumień"
+        icon_url = item.get("stream_icon") or item.get("cover") or ""
         if k == "series":
             def _w():
                 try:
@@ -551,7 +498,7 @@ def main(page: ft.Page):
                         first_ep = eps_map[first_s][0]
                         ext = first_ep.get("container_extension", "mp4") or "mp4"
                         url = state["client"].build_stream_url("series", first_ep.get("id"), ext, item=first_ep)
-                        play_stream_url(url, f"{title} - {first_ep.get('title', 'Odcinek 1')}")
+                        play_stream_url(url, f"{title} - {first_ep.get('title', 'Odcinek 1')}", icon_url)
                 except Exception:
                     pass
             threading.Thread(target=_w, daemon=True).start()
@@ -559,7 +506,7 @@ def main(page: ft.Page):
 
         ext = item.get("container_extension", "ts" if k == "live" else "mp4") or ("ts" if k == "live" else "mp4")
         url = state["client"].build_stream_url(k, item.get("stream_id"), ext, item=item)
-        play_stream_url(url, title)
+        play_stream_url(url, title, icon_url)
 
     def switch_tab(tab_key):
         search_tf.value = ""
@@ -577,7 +524,6 @@ def main(page: ft.Page):
             back_to_cats()
         publish_status()
 
-    # --- WIDOK LOGOWANIA I WIDOK DASHBOARDU ---
     login_view = ft.Container(expand=True)
     dashboard_view = ft.Container(expand=True, visible=False)
 
@@ -659,7 +605,6 @@ def main(page: ft.Page):
         dlg.open = True
         page.update()
 
-    # Budowa ekranu logowania
     login_view.content = ft.Column(
         [
             ft.Container(
@@ -686,7 +631,6 @@ def main(page: ft.Page):
         expand=True
     )
 
-    # Budowa ekranu głównego (2 kolumny: Lista po lewej + Wideo po prawej)
     left_panel = ft.Container(
         width=340,
         bgcolor="#111625",
@@ -706,7 +650,7 @@ def main(page: ft.Page):
     right_panel = ft.Container(
         expand=True,
         bgcolor="#111625",
-        padding=10,
+        padding=14,
         border_radius=10,
         content=ft.Column([
             ft.Row([
@@ -716,23 +660,30 @@ def main(page: ft.Page):
                     ft.ElevatedButton("⇄ Zmień serwer", on_click=do_logout, bgcolor="#dc2626", color="white"),
                 ], spacing=6)
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            ft.Container(content=video_player, expand=True, bgcolor="black", border_radius=8),
+            ft.Container(
+                expand=True,
+                bgcolor="#161d30",
+                border_radius=10,
+                padding=20,
+                content=ft.Row([
+                    poster_img,
+                    ft.Column([
+                        now_playing_txt,
+                        ft.Divider(color="#222b42"),
+                        tmdb_info_txt,
+                    ], expand=True, spacing=10)
+                ], spacing=16, vertical_alignment=ft.CrossAxisAlignment.START)
+            ),
             ft.Row([
-                now_playing_txt,
-                ft.Row([
-                    ft.ElevatedButton("⏯ Play/Pauza", on_click=toggle_play_pause, bgcolor="#2563eb", color="white"),
-                    ft.ElevatedButton("⏹ Stop", on_click=stop_playback, bgcolor="#4c1d24", color="#f87171"),
-                    ft.ElevatedButton("ℹ TMDB", on_click=show_info_dialog, bgcolor="#161d30", color="#60a5fa"),
-                    ft.ElevatedButton("VLC ↗", on_click=open_in_android_vlc, bgcolor="#161d30", color="white"),
-                ], spacing=6)
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+                ft.ElevatedButton("▶ Otwórz ponownie w VLC / Odtwarzaczu", on_click=open_in_android_vlc, bgcolor="#2563eb", color="white", expand=True, height=45),
+                ft.ElevatedButton("⏹ Zatrzymaj status", on_click=stop_playback, bgcolor="#4c1d24", color="#f87171", height=45),
+            ], spacing=10)
         ], expand=True)
     )
 
     dashboard_view.content = ft.Row([left_panel, right_panel], expand=True, spacing=10)
     page.add(login_view, dashboard_view)
 
-    # --- PĘTLA NASŁUCHU ZDALNYCH ROZKAZÓW Z PRZEGLĄDARKI WWW ---
     def handle_remote_command(payload):
         cmd = payload.get("cmd")
         if cmd == "ping_status":
@@ -800,8 +751,6 @@ def main(page: ft.Page):
             act = payload.get("action")
             if act == "stop":
                 stop_playback()
-            elif act == "play_pause":
-                toggle_play_pause()
             elif act == "logout":
                 do_logout()
 
