@@ -24,13 +24,13 @@ jobs:
           distribution: "temurin"
           java-version: "17"
 
-      - name: Konfiguracja Flutter SDK
+      - name: Konfiguracja Flutter SDK (kompatybilna z Gradle Groovy)
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.24.3"
+          flutter-version: "3.22.3"
           channel: "stable"
 
-      - name: Konfiguracja wbudowanego Android SDK, NDK i akceptacja licencji
+      - name: Konfiguracja Android SDK i akceptacja licencji
         run: |
           export ANDROID_HOME="/usr/local/lib/android/sdk"
           export ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"
@@ -42,14 +42,14 @@ jobs:
       - name: Instalacja Flet i zależności Python
         run: |
           python -m pip install --upgrade pip
-          pip install flet==0.24.1 requests
+          pip install flet==0.23.2 requests
 
-      - name: Budowanie pliku APK z odtwarzaczem wideo
+      - name: Budowanie pliku APK
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: |
-          flet build apk --project "iptv_v4_pro" --description "IPTV V4.4 PRO Remote Cloud" --include-packages flet_video -vv
+          flet build apk --project "iptv_v4_pro" --description "IPTV V4.4 PRO Remote Cloud" --include-packages flet_video --verbose
 
       - name: Udostępnij gotowy plik APK do pobrania
         uses: actions/upload-artifact@v4
