@@ -37,7 +37,7 @@ jobs:
           pip install flet==0.24.1
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Prepare patched Flet template (Gradle + Android TV VLC Queries)
+      - name: Prepare patched Flet template (Gradle + SDK 36 + Android TV VLC)
         run: |
           git clone --branch 0.24.1 https://github.com/flet-dev/flet-build-template.git /tmp/flet-template
           cd /tmp/flet-template
@@ -50,7 +50,15 @@ jobs:
           with open("{{cookiecutter.out_dir}}/pubspec.yaml", "w") as f:
               f.write(pub)
 
-          # 2. Dodanie uprawnień widoczności VLC i schematu vlc:// dla Android TV (Android 11+)
+          # 2. Ustawienie compileSdk = 36 w build.gradle
+          gradle_path = "{{cookiecutter.out_dir}}/android/app/build.gradle"
+          with open(gradle_path, "r") as f:
+              g = f.read()
+          g = g.replace("compileSdkVersion flutter.compileSdkVersion", "compileSdk = 36\n    compileSdkVersion flutter.compileSdkVersion")
+          with open(gradle_path, "w") as f:
+              f.write(g)
+
+          # 3. Dodanie uprawnień widoczności VLC i schematu vlc:// dla Android TV
           manifest_path = "{{cookiecutter.out_dir}}/android/app/src/main/AndroidManifest.xml"
           with open(manifest_path, "r") as f:
               manifest = f.read()
@@ -58,8 +66,6 @@ jobs:
           queries_patch = """
               <queries>
                   <package android:name="org.videolan.vlc" />
-                  <package android:name="com.mxtech.videoplayer.ad" />
-                  <package android:name="com.mxtech.videoplayer.pro" />
                   <intent>
                       <action android:name="android.intent.action.VIEW" />
                       <data android:scheme="vlc" />
@@ -72,10 +78,6 @@ jobs:
                       <action android:name="android.intent.action.VIEW" />
                       <data android:scheme="https" />
                   </intent>
-                  <intent>
-                      <action android:name="android.intent.action.VIEW" />
-                      <data android:mimeType="video/*" />
-                  </intent>
               </queries>
           </manifest>"""
 
@@ -85,14 +87,13 @@ jobs:
           '
           git config user.email "builder@localhost"
           git config user.name "Builder"
-          git commit -am "Fix Gradle and enable Android TV VLC intents"
+          git commit -am "Fix SDK 36 and Android TV VLC queries"
 
-      - name: Build APK with Flet (including flet_video)
+      - name: Build APK with Flet (Pure Python app without flet_video)
         run: |
           flet build apk \
             --project "iptv_v4_pro" \
             --description "IPTV V4.4 PRO Remote Cloud" \
-            --include-packages flet_video \
             --template /tmp/flet-template \
             --template-ref 0.24.1 \
             --verbose
