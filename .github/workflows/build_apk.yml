@@ -37,12 +37,12 @@ jobs:
           pip install flet==0.24.1
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Prepare patched Flet template (Fix Gradle & Android TV VLC visibility)
+      - name: Prepare patched Flet template (Gradle + Android TV VLC Queries)
         run: |
           git clone --branch 0.24.1 https://github.com/flet-dev/flet-build-template.git /tmp/flet-template
           cd /tmp/flet-template
           python3 -c '
-          # 1. Naprawa wakelock_plus i package_info_plus w pubspec.yaml
+          # 1. Naprawa zależności w pubspec.yaml
           with open("{{cookiecutter.out_dir}}/pubspec.yaml", "r") as f:
               pub = f.read()
           pub = pub.replace("wakelock_plus: ^1.2.5", "wakelock_plus: 1.2.8")
@@ -50,7 +50,7 @@ jobs:
           with open("{{cookiecutter.out_dir}}/pubspec.yaml", "w") as f:
               f.write(pub)
 
-          # 2. Odblokowanie widoczności VLC i zewnętrznych odtwarzaczy na Android TV (Android 11+)
+          # 2. Dodanie uprawnień widoczności VLC i schematu vlc:// dla Android TV (Android 11+)
           manifest_path = "{{cookiecutter.out_dir}}/android/app/src/main/AndroidManifest.xml"
           with open(manifest_path, "r") as f:
               manifest = f.read()
@@ -85,13 +85,14 @@ jobs:
           '
           git config user.email "builder@localhost"
           git config user.name "Builder"
-          git commit -am "Fix Gradle dependencies and add Android TV VLC queries"
+          git commit -am "Fix Gradle and enable Android TV VLC intents"
 
-      - name: Build APK with Flet
+      - name: Build APK with Flet (including flet_video)
         run: |
           flet build apk \
             --project "iptv_v4_pro" \
             --description "IPTV V4.4 PRO Remote Cloud" \
+            --include-packages flet_video \
             --template /tmp/flet-template \
             --template-ref 0.24.1 \
             --verbose
