@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Client V4.4 PRO - ANDROID TV EDITION (Fixed Remote Focus & Navigation)
+IPTV Client V4.4 PRO - ANDROID TV EDITION (Fixed Login & Remote Navigation)
 ---------------------------------------------------------------------------------------
 """
 
@@ -315,11 +315,6 @@ def main(page: ft.Page):
 
     device_name = page.client_storage.get("device_name") or "Android TV Box"
     profiles = page.client_storage.get("profiles") or []
-    favorites = page.client_storage.get("favorites") or {
-        "live": [],
-        "vod": [],
-        "series": [],
-    }
     auto_vlc_saved = page.client_storage.get("auto_vlc")
     if auto_vlc_saved is None:
         auto_vlc_saved = True
@@ -341,10 +336,11 @@ def main(page: ft.Page):
         "volume": 100,
         "muted": False,
         "auto_vlc": bool(auto_vlc_saved),
-        "zone": "list",  # "tabs", "list", "right"
+        "zone": "login",  # Początkowa strefa na ekranie logowania
         "tab_idx": 0,
         "list_idx": 0,
         "right_idx": 0,
+        "login_idx": 0,
         "page_offset": 0,
     }
 
@@ -388,7 +384,7 @@ def main(page: ft.Page):
                 snapshot = {
                     "type": "player_status",
                     "device_name": (
-                        page.client_storage.get("device_name") or device_name
+                        page.client_storage.get("device_id") or device_name
                     ),
                     "device_id": clean_id,
                     "ts": int(time.time() * 1000),
@@ -469,6 +465,71 @@ def main(page: ft.Page):
         label="Lub link do listy M3U / M3U8",
         value=page.client_storage.get("m3u_url") or "",
     )
+
+    def do_login_action(_e=None):
+        do_login()
+
+    def open_remote_settings_dlg(_e=None):
+        name_in = ft.TextField(
+            label="Nazwa własna tego odbiornika",
+            value=page.client_storage.get("device_name") or device_name,
+        )
+        id_in = ft.TextField(
+            label="Unikalny Kod ID",
+            value=page.client_storage.get("device_id") or device_id,
+        )
+
+        def _save(_):
+            nn = name_in.value.strip() or "Android TV"
+            ni = (
+                re.sub(r"[^a-zA-Z0-9_-]", "", id_in.value.strip()) or device_id
+            )
+            page.client_storage.set("device_name", nn)
+            page.client_storage.set("device_id", ni)
+            header_dev_lbl.value = f"📺 {nn} [{ni}]"
+            dlg.open = False
+            page.update()
+            publish_status()
+
+        dlg = ft.AlertDialog(
+            title=ft.Text("🌐 Konfiguracja Zdalnego Odbiornika"),
+            content=ft.Column(
+                [
+                    ft.Text(
+                        "Wpisz ten Kod ID w panelu sterowania:",
+                        size=12,
+                    ),
+                    name_in,
+                    id_in,
+                ],
+                tight=True,
+                spacing=10,
+            ),
+            actions=[
+                ft.ElevatedButton(
+                    "💾 Zapisz", on_click=_save, bgcolor="#2563eb", color="white"
+                )
+            ],
+        )
+        page.overlay.append(dlg)
+        dlg.open = True
+        page.update()
+
+    btn_remote_id = ft.ElevatedButton(
+        "🌐 Nazwa / Kod ID",
+        on_click=open_remote_settings_dlg,
+        bgcolor="#0d9488",
+        color="white",
+    )
+    btn_submit_login = ft.ElevatedButton(
+        "🚀 POŁĄCZ Z SERWEREM",
+        on_click=do_login_action,
+        bgcolor="#2563eb",
+        color="white",
+        height=48,
+    )
+
+    login_items = [btn_remote_id, srv_tf, usr_tf, pas_tf, m3u_tf, btn_submit_login]
 
     def launch_vlc_intent(raw_url: str, title: str = ""):
         if not raw_url:
@@ -611,6 +672,18 @@ def main(page: ft.Page):
     )
 
     def update_focus_styles():
+        if login_view.visible:
+            for i, item in enumerate(login_items):
+                is_focused = state["zone"] == "login" and state["login_idx"] == i
+                if isinstance(item, ft.TextField):
+                    item.border_color = "#f59e0b" if is_focused else "#1e293b"
+                    item.focused_border_color = "#f59e0b"
+                elif isinstance(item, ft.ElevatedButton):
+                    item.bgcolor = "#f59e0b" if is_focused else ("#0d9488" if i == 0 else "#2563eb")
+                    item.color = "black" if is_focused else "white"
+            page.update()
+            return
+
         if not dashboard_view.visible:
             return
 
@@ -832,10 +905,31 @@ def main(page: ft.Page):
         publish_status()
 
     def on_key_event(e: ft.KeyboardEvent):
-        if not dashboard_view.visible:
+        key = e.key
+
+        if login_view.visible:
+            if key == "Arrow Down":
+                if state["login_idx"] < len(login_items) - 1:
+                    state["login_idx"] += 1
+            elif key == "Arrow Up":
+                if state["login_idx"] > 0:
+                    state["login_idx"] -= 1
+            elif key in ("Enter", "Select", " "):
+                idx = state["login_idx"]
+                if idx == 0:
+                    open_remote_settings_dlg()
+                elif idx == len(login_items) - 1:
+                    do_login()
+                else:
+                    # Skupienie na polu tekstowym
+                    item = login_items[idx]
+                    if hasattr(item, "focus"):
+                        item.focus()
+            update_focus_styles()
             return
 
-        key = e.key
+        if not dashboard_view.visible:
+            return
 
         if key == "Arrow Right":
             if state["zone"] == "tabs":
@@ -968,54 +1062,10 @@ def main(page: ft.Page):
         state["client"] = None
         dashboard_view.visible = False
         login_view.visible = True
+        state["zone"] = "login"
+        update_focus_styles()
         page.update()
         publish_status()
-
-    def open_remote_settings_dlg(_e=None):
-        name_in = ft.TextField(
-            label="Nazwa własna tego odbiornika",
-            value=page.client_storage.get("device_name") or device_name,
-        )
-        id_in = ft.TextField(
-            label="Unikalny Kod ID",
-            value=page.client_storage.get("device_id") or device_id,
-        )
-
-        def _save(_):
-            nn = name_in.value.strip() or "Android TV"
-            ni = (
-                re.sub(r"[^a-zA-Z0-9_-]", "", id_in.value.strip()) or device_id
-            )
-            page.client_storage.set("device_name", nn)
-            page.client_storage.set("device_id", ni)
-            header_dev_lbl.value = f"📺 {nn} [{ni}]"
-            dlg.open = False
-            page.update()
-            publish_status()
-
-        dlg = ft.AlertDialog(
-            title=ft.Text("🌐 Konfiguracja Zdalnego Odbiornika"),
-            content=ft.Column(
-                [
-                    ft.Text(
-                        "Wpisz ten Kod ID w panelu sterowania:",
-                        size=12,
-                    ),
-                    name_in,
-                    id_in,
-                ],
-                tight=True,
-                spacing=10,
-            ),
-            actions=[
-                ft.ElevatedButton(
-                    "💾 Zapisz", on_click=_save, bgcolor="#2563eb", color="white"
-                )
-            ],
-        )
-        page.overlay.append(dlg)
-        dlg.open = True
-        page.update()
 
     login_view.content = ft.Column(
         [
@@ -1029,12 +1079,7 @@ def main(page: ft.Page):
                                     size=20,
                                     weight=ft.FontWeight.BOLD,
                                 ),
-                                ft.ElevatedButton(
-                                    "🌐 Nazwa / Kod ID",
-                                    on_click=open_remote_settings_dlg,
-                                    bgcolor="#0d9488",
-                                    color="white",
-                                ),
+                                btn_remote_id,
                             ],
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         ),
@@ -1043,13 +1088,7 @@ def main(page: ft.Page):
                         usr_tf,
                         pas_tf,
                         m3u_tf,
-                        ft.ElevatedButton(
-                            "🚀 POŁĄCZ Z SERWEREM",
-                            on_click=do_login,
-                            bgcolor="#2563eb",
-                            color="white",
-                            height=48,
-                        ),
+                        btn_submit_login,
                     ],
                     spacing=10,
                 ),
@@ -1108,6 +1147,7 @@ def main(page: ft.Page):
         [left_panel, right_panel], expand=True, spacing=10
     )
     page.add(login_view, dashboard_view)
+    update_focus_styles()
 
 
 ft.app(target=main)
