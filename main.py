@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Client V4.4 PRO - ANDROID TV EDITION (Safe Boot + VLC + Cloud Listener)
+IPTV Client V4.5 PRO - ANDROID TV EDITION (Safe Boot + VLC + Cloud Listener + Series & Pagination Fix)
 ---------------------------------------------------------------------------------------
 """
 
@@ -318,7 +318,7 @@ def safe_storage_set(page, key, val):
 
 def main(page: ft.Page):
     try:
-        page.title = "IPTV V4.4 PRO Android TV"
+        page.title = "IPTV V4.5 PRO Android TV"
         page.theme_mode = ft.ThemeMode.DARK
         page.bgcolor = "#0b0e17"
         page.padding = 10
@@ -337,11 +337,13 @@ def main(page: ft.Page):
             "client": None,
             "kind": "live",
             "in_fav": False,
-            "view_mode": "categories",
+            "view_mode": "categories",  # categories | streams | episodes
             "active_cat": None,
+            "active_series_title": "",
             "active_profile_name": "",
             "categories": {"live": [], "vod": [], "series": []},
             "streams": [],
+            "episodes": [],
             "filtered": [],
             "now_playing": "Brak aktywnego strumienia",
             "playing_url": "",
@@ -359,11 +361,11 @@ def main(page: ft.Page):
         }
 
         PAGE_SIZE = 60
-        session = make_session()
 
         def publish_status():
             def _worker():
                 try:
+                    local_session = make_session()
                     clean_id = re.sub(
                         r"[^a-zA-Z0-9_-]",
                         "",
@@ -413,7 +415,7 @@ def main(page: ft.Page):
                         "muted": state["muted"],
                         "profiles": prof_summary,
                     }
-                    session.post(
+                    local_session.post(
                         f"https://ntfy.sh/{status_topic}",
                         data=json.dumps(snapshot, ensure_ascii=False).encode(
                             "utf-8"
@@ -611,7 +613,8 @@ def main(page: ft.Page):
             now_playing_txt.value = f"▶ {title}"
             page.update()
 
-            launch_vlc_intent(url, title)
+            if state["auto_vlc"]:
+                launch_vlc_intent(url, title)
             publish_status()
 
         def stop_playback(_e=None):
@@ -779,24 +782,31 @@ def main(page: ft.Page):
                 except Exception:
                     pass
 
+        def change_page(delta):
+            state["page_offset"] = max(0, state["page_offset"] + delta)
+            state["list_idx"] = 0
+            render_list()
+
         def render_list():
             list_view.controls.clear()
             list_item_buttons.clear()
             list_item_actions.clear()
 
             q = (search_tf.value or "").strip().lower()
-            is_cat = state["view_mode"] == "categories" and not state["in_fav"]
+            v_mode = state["view_mode"]
 
-            raw = (
-                state["categories"].get(state["kind"], [])
-                if is_cat
-                else state["streams"]
-            )
+            if v_mode == "categories":
+                raw = state["categories"].get(state["kind"], [])
+            elif v_mode == "episodes":
+                raw = state["episodes"]
+            else:
+                raw = state["streams"]
+
             filtered = []
             for it in raw:
                 nm = (
                     it.get("category_name")
-                    if is_cat
+                    if v_mode == "categories"
                     else (it.get("name") or it.get("title") or "")
                 )
                 if not q or q in (nm or "").lower():
@@ -805,7 +815,19 @@ def main(page: ft.Page):
 
             btn_idx = 0
 
-            if not is_cat and not state["in_fav"]:
+            # Przycisk powrotu
+            if v_mode == "episodes":
+                b_back = ft.ElevatedButton(
+                    key=f"item_{btn_idx}",
+                    text="↩ Wróć do listy seriali",
+                    height=44,
+                    on_click=lambda _: back_to_streams(),
+                )
+                list_item_buttons.append(b_back)
+                list_item_actions.append(back_to_streams)
+                list_view.controls.append(b_back)
+                btn_idx += 1
+            elif v_mode == "streams" and not state["in_fav"]:
                 b_back = ft.ElevatedButton(
                     key=f"item_{btn_idx}",
                     text="↩ Wróć do listy kategorii",
@@ -821,12 +843,29 @@ def main(page: ft.Page):
             end = start + PAGE_SIZE
             slice_items = filtered[start:end]
 
+            # Przycisk poprzedniej strony
+            if start > 0:
+                b_prev = ft.ElevatedButton(
+                    key=f"item_{btn_idx}",
+                    text=f"⬆ Poprzednie ({max(1, start - PAGE_SIZE + 1)} - {start})",
+                    height=42,
+                    on_click=lambda _: change_page(-PAGE_SIZE),
+                )
+                list_item_buttons.append(b_prev)
+                list_item_actions.append(lambda: change_page(-PAGE_SIZE))
+                list_view.controls.append(b_prev)
+                btn_idx += 1
+
             for local_i, item in enumerate(slice_items):
                 real_num = start + local_i + 1
-                if is_cat:
+                if v_mode == "categories":
                     cat_name = item.get("category_name", "Kategoria")
                     action_fn = lambda c=item: open_category(c)
                     label = f"{real_num}. 📁 {cat_name}   ❯"
+                elif v_mode == "episodes":
+                    ep_title = item.get("display_title") or item.get("title") or "Odcinek"
+                    action_fn = lambda ep=item: play_episode(ep)
+                    label = f"{real_num}. ▶ {ep_title}"
                 else:
                     k = item.get("kind") or state["kind"]
                     icon = (
@@ -859,12 +898,34 @@ def main(page: ft.Page):
                 list_view.controls.append(b_item)
                 btn_idx += 1
 
+            # Przycisk następnej strony
+            if end < len(filtered):
+                b_next = ft.ElevatedButton(
+                    key=f"item_{btn_idx}",
+                    text=f"⬇ Następne ({end + 1} - {min(len(filtered), end + PAGE_SIZE)}) z {len(filtered)}",
+                    height=42,
+                    on_click=lambda _: change_page(PAGE_SIZE),
+                )
+                list_item_buttons.append(b_next)
+                list_item_actions.append(lambda: change_page(PAGE_SIZE))
+                list_view.controls.append(b_next)
+                btn_idx += 1
+
             if state["list_idx"] >= len(list_item_buttons):
                 state["list_idx"] = max(0, len(list_item_buttons) - 1)
 
             update_focus_styles()
 
-        search_tf.on_change = lambda _: render_list()
+        search_tf.on_change = lambda _: (
+            state.update({"page_offset": 0, "list_idx": 0}),
+            render_list(),
+        )
+
+        def back_to_streams():
+            state["view_mode"] = "streams"
+            state["page_offset"] = 0
+            state["list_idx"] = 0
+            render_list()
 
         def back_to_cats():
             state["view_mode"] = "categories"
@@ -918,35 +979,61 @@ def main(page: ft.Page):
 
             threading.Thread(target=_w, daemon=True).start()
 
+        def play_episode(ep_item):
+            ext = ep_item.get("container_extension", "mp4") or "mp4"
+            url = state["client"].build_stream_url(
+                "series",
+                ep_item.get("id"),
+                ext,
+                item=ep_item,
+            )
+            play_stream_url(
+                url,
+                ep_item.get("display_title") or ep_item.get("title") or "Odcinek",
+            )
+
         def on_stream_click(item):
             k = item.get("kind") or state["kind"]
             title = item.get("name") or item.get("title") or "Strumień"
             if k == "series":
+                state["active_series_title"] = title
+                list_view.controls.clear()
+                list_view.controls.append(
+                    ft.Text(f"⏳ Pobieranie odcinków: {title}...", color="#60a5fa")
+                )
+                page.update()
+
                 def _w():
                     try:
                         info = state["client"].get_series_info(
                             item.get("series_id")
                         )
                         eps_map = info.get("episodes") or {}
-                        if eps_map:
-                            first_s = sorted(eps_map.keys())[0]
-                            first_ep = eps_map[first_s][0]
-                            ext = (
-                                first_ep.get("container_extension", "mp4")
-                                or "mp4"
-                            )
-                            url = state["client"].build_stream_url(
-                                "series",
-                                first_ep.get("id"),
-                                ext,
-                                item=first_ep,
-                            )
-                            play_stream_url(
-                                url,
-                                f"{title} - {first_ep.get('title', 'Odcinek 1')}",
-                            )
+                        flat_eps = []
+                        sorted_seasons = sorted(
+                            eps_map.keys(),
+                            key=lambda x: int(x) if str(x).isdigit() else 999,
+                        )
+                        for s_num in sorted_seasons:
+                            for ep in eps_map[s_num]:
+                                ep_num = ep.get("episode_num", "")
+                                ep_raw_title = ep.get("title") or f"Odcinek {ep_num}"
+                                ep_copy = dict(ep)
+                                ep_copy["display_title"] = (
+                                    f"S{int(s_num):02d}E{int(ep_num):02d} - {ep_raw_title}"
+                                    if str(s_num).isdigit() and str(ep_num).isdigit()
+                                    else f"Sezon {s_num} - {ep_raw_title}"
+                                )
+                                flat_eps.append(ep_copy)
+
+                        state["episodes"] = flat_eps
+                        state["view_mode"] = "episodes"
+                        state["page_offset"] = 0
+                        state["list_idx"] = 0
+                        render_list()
                     except Exception:
-                        pass
+                        back_to_streams()
+
                 threading.Thread(target=_w, daemon=True).start()
                 return
 
@@ -1076,7 +1163,9 @@ def main(page: ft.Page):
                         do_logout()
 
             elif key in ("Backspace", "Escape"):
-                if state["view_mode"] == "streams" and not state["in_fav"]:
+                if state["view_mode"] == "episodes":
+                    back_to_streams()
+                elif state["view_mode"] == "streams" and not state["in_fav"]:
                     back_to_cats()
 
             update_focus_styles()
@@ -1165,7 +1254,6 @@ def main(page: ft.Page):
             nonlocal profiles, device_name
             c_type = cmd.get("type") or cmd.get("action") or cmd.get("cmd") or ""
 
-            # 1. Dodawanie nowej listy z formularza WWW
             if c_type in (
                 "add_profile",
                 "send_list",
@@ -1206,7 +1294,6 @@ def main(page: ft.Page):
                 else:
                     publish_status()
 
-            # 2. Przełączanie na zapisaną listę
             elif c_type in (
                 "switch_profile",
                 "select_profile",
@@ -1220,7 +1307,6 @@ def main(page: ft.Page):
                         apply_profile(p)
                         break
 
-            # 3. Usuwanie zapisanej listy
             elif c_type in (
                 "delete_profile",
                 "remove_profile",
@@ -1233,7 +1319,6 @@ def main(page: ft.Page):
                 safe_storage_set(page, "profiles", profiles)
                 publish_status()
 
-            # 4. Zmiana nazwy odbiornika
             elif c_type in ("set_name", "rename", "set_device_name", "save_name"):
                 nn = (
                     cmd.get("device_name") or cmd.get("name") or ""
@@ -1246,7 +1331,6 @@ def main(page: ft.Page):
                     page.update()
                     publish_status()
 
-            # 5. Zdalny pilot sterowania
             elif c_type in ("remote_control", "control", "player", "key", "command"):
                 act = cmd.get("command") or cmd.get("action") or cmd.get("key") or ""
                 _exec_player_action(act)
@@ -1285,6 +1369,7 @@ def main(page: ft.Page):
 
         def cloud_listener():
             nonlocal processed_ids
+            listener_session = make_session()
             while True:
                 try:
                     clean_id = re.sub(
@@ -1292,10 +1377,9 @@ def main(page: ft.Page):
                         "",
                         safe_storage_get(page, "device_id", device_id),
                     )
-                    # Nasłuchujemy zarówno głównego kanału jak i kanału _cmd
                     topics = f"iptv_v4_pro_{clean_id},iptv_v4_pro_{clean_id}_cmd"
                     url = f"https://ntfy.sh/{topics}/json?poll=1&since=30m"
-                    r = session.get(url, timeout=10)
+                    r = listener_session.get(url, timeout=10)
                     if r.status_code == 200:
                         for line in r.text.splitlines():
                             if not line.strip():
@@ -1332,7 +1416,6 @@ def main(page: ft.Page):
                 time.sleep(2.5)
 
         threading.Thread(target=cloud_listener, daemon=True).start()
-        # =========================================================================
 
         login_view.content = ft.Column(
             [
@@ -1342,7 +1425,7 @@ def main(page: ft.Page):
                             ft.Row(
                                 [
                                     ft.Text(
-                                        "▶ IPTV V4.4 PRO ANDROID TV",
+                                        "▶ IPTV V4.5 PRO ANDROID TV",
                                         size=20,
                                         weight=ft.FontWeight.BOLD,
                                     ),
