@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Client V4.5 PRO - ANDROID TV EDITION (Safe Boot + VLC + Cloud Listener + Series & Pagination Fix)
----------------------------------------------------------------------------------------
+IPTV Client V4.6 PRO - ANDROID TV EDITION
+Poprawki:
+- Całkowita przebudowa nawigacji D-Pad (ft.Container zamiast ElevatedButton - brak konfliktów fokusu)
+- Wyraźne podświetlanie wybranej kategorii i kanału (żółta ramka + strzałka ▶ + kontrast)
+- Blokada podwójnego wywołania VLC (Anti-Double-Trigger) + czysty URL (naprawa błędu "kilku mediów")
 """
 
 import datetime
@@ -318,7 +321,7 @@ def safe_storage_set(page, key, val):
 
 def main(page: ft.Page):
     try:
-        page.title = "IPTV V4.5 PRO Android TV"
+        page.title = "IPTV V4.6 PRO Android TV"
         page.theme_mode = ft.ThemeMode.DARK
         page.bgcolor = "#0b0e17"
         page.padding = 10
@@ -352,15 +355,47 @@ def main(page: ft.Page):
             "volume": 100,
             "muted": False,
             "auto_vlc": bool(auto_vlc_saved),
+            "use_vlc_scheme": False,  # Domyślnie czysty HTTP (nie powoduje błędu wielu mediów)
             "zone": "login",
             "tab_idx": 0,
             "list_idx": 0,
             "right_idx": 0,
             "login_idx": 0,
             "page_offset": 0,
+            "last_ok_ts": 0.0,
+            "last_vlc_ts": 0.0,
         }
 
-        PAGE_SIZE = 60
+        PAGE_SIZE = 50
+
+        # Funkcja pomocnicza tworząca kafelki odporne na "kradzież" fokusu przez Androida
+        def make_tv_button(text_str, on_click_fn, key_str=None, height=46, expand=False):
+            txt_ctrl = ft.Text(
+                text_str,
+                size=14,
+                weight=ft.FontWeight.BOLD,
+                color="white",
+                no_wrap=True,
+                expand=True,
+            )
+            box = ft.Container(
+                key=key_str,
+                content=ft.Row([txt_ctrl], alignment=ft.MainAxisAlignment.START),
+                height=height,
+                padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                border_radius=8,
+                bgcolor="#161d30",
+                border=ft.border.all(2, "transparent"),
+                alignment=ft.alignment.center_left,
+                expand=expand,
+                on_click=lambda _: on_click_fn(),
+            )
+            box.data = {"text_ctrl": txt_ctrl, "base_text": text_str, "action": on_click_fn}
+            return box
+
+        def set_tv_button_text(box, new_text):
+            box.data["base_text"] = new_text
+            box.data["text_ctrl"].value = new_text
 
         def publish_status():
             def _worker():
@@ -427,22 +462,26 @@ def main(page: ft.Page):
 
             threading.Thread(target=_worker, daemon=True).start()
 
+        status_info_title = ft.Text(
+            "Wybierz kanał lub film z listy po lewej stronie",
+            size=18,
+            weight=ft.FontWeight.BOLD,
+            color="#38bdf8",
+            text_align=ft.TextAlign.CENTER,
+        )
+        status_info_sub = ft.Text(
+            "Użyj strzałek ⬆️ ⬇️ na pilocie oraz przycisku OK.\nBrak podwójnego wywołania VLC (tryb pojedynczego strumienia).",
+            size=13,
+            color="#94a3b8",
+            text_align=ft.TextAlign.CENTER,
+        )
+
         video_placeholder = ft.Container(
             content=ft.Column(
                 [
                     ft.Text("📺", size=54),
-                    ft.Text(
-                        "Tryb odtwarzacza zewnętrznego (VLC)",
-                        size=18,
-                        weight=ft.FontWeight.BOLD,
-                        color="#38bdf8",
-                    ),
-                    ft.Text(
-                        "Wybierz kanał lub film z listy po lewej stronie i naciśnij OK na pilocie,\naby uruchomić strumień bezpośrednio w aplikacji VLC.",
-                        size=13,
-                        color="#94a3b8",
-                        text_align=ft.TextAlign.CENTER,
-                    ),
+                    status_info_title,
+                    status_info_sub,
                 ],
                 alignment=ft.MainAxisAlignment.CENTER,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -453,13 +492,14 @@ def main(page: ft.Page):
             border_radius=8,
             border=ft.border.all(1, "#1e293b"),
             alignment=ft.alignment.center,
+            padding=15,
         )
 
         now_playing_txt = ft.Text(
-            "▶ Pilot TV: ⬅️ ➡️ zmiana okna | ⬆️ ⬇️ góra/dół | OK zatwierdź",
+            "▶ Pilot TV: ⬅️ ➡️ zmiana panelu | ⬆️ ⬇️ góra/dół | OK zatwierdź | WSTECZ powrót",
             weight=ft.FontWeight.BOLD,
             size=14,
-            color="#38bdf8",
+            color="#f59e0b",
         )
         header_dev_lbl = ft.Text(
             f"📺 {device_name} [{device_id}]",
@@ -467,15 +507,15 @@ def main(page: ft.Page):
             color="#10b981",
             weight=ft.FontWeight.BOLD,
         )
+        list_header_lbl = ft.Text(
+            "📂 LISTA KATEGORII",
+            size=13,
+            weight=ft.FontWeight.BOLD,
+            color="#38bdf8",
+        )
+
         list_view = ft.ListView(
             expand=True, spacing=6, padding=4, auto_scroll=False
-        )
-        search_tf = ft.TextField(
-            hint_text="Szukaj...",
-            height=40,
-            text_size=13,
-            content_padding=8,
-            expand=True,
         )
         status_banner = ft.Text(
             f"🟢 Zdalny Cloud aktywny — Kod ID: {device_id}",
@@ -552,19 +592,8 @@ def main(page: ft.Page):
             dlg.open = True
             page.update()
 
-        btn_remote_id = ft.ElevatedButton(
-            "🌐 Nazwa / Kod ID",
-            on_click=open_remote_settings_dlg,
-            bgcolor="#0d9488",
-            color="white",
-        )
-        btn_submit_login = ft.ElevatedButton(
-            "🚀 POŁĄCZ Z SERWEREM",
-            on_click=lambda _: do_login(),
-            bgcolor="#2563eb",
-            color="white",
-            height=48,
-        )
+        btn_remote_id = make_tv_button("🌐 Nazwa / Kod ID", open_remote_settings_dlg, height=44)
+        btn_submit_login = make_tv_button("🚀 POŁĄCZ Z SERWEREM", lambda: do_login(), height=48)
 
         login_items = [
             btn_remote_id,
@@ -575,23 +604,38 @@ def main(page: ft.Page):
             btn_submit_login,
         ]
 
+        # =====================================================================
+        # BEZPIECZNE URUCHAMIANIE VLC (BRAK BŁĘDU "KILKU MEDIÓW")
+        # =====================================================================
         def launch_vlc_intent(raw_url: str, title: str = ""):
             if not raw_url:
                 return
-            clean_u = raw_url.strip()
-            now_playing_txt.value = (
-                f"🚀 Otwieranie w VLC: {title or state['now_playing']}"
-            )
+
+            # Blokada przed podwójnym uruchomieniem tego samego linku w ciągu 1.8 sekundy
+            now = time.time()
+            if now - state["last_vlc_ts"] < 1.8:
+                return
+            state["last_vlc_ts"] = now
+
+            # Oczyszczenie adresu URL z ewentualnych znaków nowej linii lub spacji
+            clean_u = raw_url.strip().splitlines()[0].strip()
+
+            now_playing_txt.value = f"🚀 Uruchamianie: {title or state['now_playing']}"
+            status_info_title.value = f"▶ {title or state['now_playing']}"
+            status_info_sub.value = f"Strumień przekazany do zewnętrznego odtwarzacza.\nURL: {clean_u[:65]}..."
             page.update()
+
             try:
-                vlc_url = (
-                    clean_u
-                    if clean_u.startswith("vlc://")
-                    else f"vlc://{clean_u}"
-                )
-                page.launch_url(vlc_url)
+                if state["use_vlc_scheme"]:
+                    target_url = clean_u if clean_u.startswith("vlc://") else f"vlc://{clean_u}"
+                else:
+                    # Czysty link HTTP/HTTPS – Android TV otwiera go w domyślnym odtwarzaczu (VLC)
+                    # bez psucia składni adresu i bez błędu "kilku mediów"
+                    target_url = clean_u
+
+                page.launch_url(target_url)
             except Exception as ex:
-                now_playing_txt.value = f"❌ Błąd VLC: {ex}"
+                now_playing_txt.value = f"❌ Błąd uruchomienia: {ex}"
                 page.update()
 
         def open_in_android_vlc(_e=None):
@@ -600,8 +644,17 @@ def main(page: ft.Page):
         def toggle_auto_vlc(_e=None):
             state["auto_vlc"] = not state["auto_vlc"]
             safe_storage_set(page, "auto_vlc", state["auto_vlc"])
-            btn_auto_vlc.text = (
-                f"Tryb VLC: {'WŁ.' if state['auto_vlc'] else 'WYŁ.'}"
+            set_tv_button_text(
+                btn_auto_vlc,
+                f"Auto-start: {'WŁ.' if state['auto_vlc'] else 'WYŁ.'}",
+            )
+            update_focus_styles()
+
+        def toggle_vlc_scheme(_e=None):
+            state["use_vlc_scheme"] = not state["use_vlc_scheme"]
+            set_tv_button_text(
+                btn_scheme_vlc,
+                f"Tryb linku: {'vlc://' if state['use_vlc_scheme'] else 'Standard HTTP'}",
             )
             update_focus_styles()
 
@@ -610,7 +663,8 @@ def main(page: ft.Page):
             state["now_playing"] = title
             state["is_playing"] = True
             state["paused"] = False
-            now_playing_txt.value = f"▶ {title}"
+            now_playing_txt.value = f"▶ Wybrano: {title}"
+            status_info_title.value = f"▶ {title}"
             page.update()
 
             if state["auto_vlc"]:
@@ -622,6 +676,7 @@ def main(page: ft.Page):
             state["paused"] = False
             state["now_playing"] = "Brak aktywnego strumienia"
             now_playing_txt.value = "⏹ Zatrzymano odtwarzanie"
+            status_info_title.value = "⏹ Zatrzymano"
             page.update()
             publish_status()
 
@@ -654,41 +709,30 @@ def main(page: ft.Page):
 
             threading.Thread(target=_w, daemon=True).start()
 
-        btn_tab_live = ft.ElevatedButton(
-            "📺 TV", on_click=lambda _: switch_tab("live", 0), expand=True
-        )
-        btn_tab_vod = ft.ElevatedButton(
-            "🎬 Filmy", on_click=lambda _: switch_tab("vod", 1), expand=True
-        )
-        btn_tab_ser = ft.ElevatedButton(
-            "🎞 Seriale", on_click=lambda _: switch_tab("series", 2), expand=True
-        )
+        btn_tab_live = make_tv_button("📺 TV", lambda: switch_tab("live", 0), height=42, expand=True)
+        btn_tab_vod = make_tv_button("🎬 Filmy", lambda: switch_tab("vod", 1), height=42, expand=True)
+        btn_tab_ser = make_tv_button("🎞 Seriale", lambda: switch_tab("series", 2), height=42, expand=True)
         tab_buttons = [btn_tab_live, btn_tab_vod, btn_tab_ser]
 
-        btn_play_pause = ft.ElevatedButton(
-            "⏯ Play/Pauza", on_click=toggle_play_pause
+        btn_vlc = make_tv_button("🚀 Otwórz w VLC", open_in_android_vlc, height=42)
+        btn_auto_vlc = make_tv_button(
+            f"Auto-start: {'WŁ.' if state['auto_vlc'] else 'WYŁ.'}",
+            toggle_auto_vlc,
+            height=42,
         )
-        btn_stop = ft.ElevatedButton("⏹ Stop", on_click=stop_playback)
-        btn_vlc = ft.ElevatedButton(
-            "🚀 Otwórz w VLC", on_click=open_in_android_vlc
+        btn_scheme_vlc = make_tv_button(
+            "Tryb linku: Standard HTTP",
+            toggle_vlc_scheme,
+            height=42,
         )
-        btn_auto_vlc = ft.ElevatedButton(
-            f"Tryb VLC: {'WŁ.' if state['auto_vlc'] else 'WYŁ.'}",
-            on_click=toggle_auto_vlc,
-        )
-        btn_tmdb = ft.ElevatedButton("ℹ Opis TMDB", on_click=show_info_dialog)
-        btn_cloud_id = ft.ElevatedButton(
-            "🌐 Kod ID", on_click=lambda _: open_remote_settings_dlg()
-        )
-        btn_logout = ft.ElevatedButton(
-            "⇄ Zmień serwer", on_click=lambda _: do_logout()
-        )
+        btn_tmdb = make_tv_button("ℹ Opis TMDB", show_info_dialog, height=42)
+        btn_cloud_id = make_tv_button("🌐 Kod ID", open_remote_settings_dlg, height=42)
+        btn_logout = make_tv_button("⇄ Zmień serwer", lambda: do_logout(), height=42)
 
         right_buttons = [
             btn_vlc,
             btn_auto_vlc,
-            btn_play_pause,
-            btn_stop,
+            btn_scheme_vlc,
             btn_tmdb,
             btn_cloud_id,
             btn_logout,
@@ -697,7 +741,7 @@ def main(page: ft.Page):
         list_item_actions = []
 
         left_panel = ft.Container(
-            width=380,
+            width=430,
             bgcolor="#111625",
             padding=10,
             border_radius=10,
@@ -714,6 +758,9 @@ def main(page: ft.Page):
         login_view = ft.Container(expand=True, visible=True)
         dashboard_view = ft.Container(expand=True, visible=False)
 
+        # =====================================================================
+        # WYRAŹNE PODŚWIETLANIE FOKUSU NA EKRANIE TELEWIZORA
+        # =====================================================================
         def update_focus_styles():
             if login_view.visible:
                 for i, item in enumerate(login_items):
@@ -721,17 +768,12 @@ def main(page: ft.Page):
                         state["zone"] == "login" and state["login_idx"] == i
                     )
                     if isinstance(item, ft.TextField):
-                        item.border_color = (
-                            "#f59e0b" if is_focused else "#334155"
-                        )
-                        item.focused_border_color = "#f59e0b"
-                    elif isinstance(item, ft.ElevatedButton):
-                        item.bgcolor = (
-                            "#f59e0b"
-                            if is_focused
-                            else ("#0d9488" if i == 0 else "#2563eb")
-                        )
-                        item.color = "black" if is_focused else "white"
+                        item.border_color = "#f59e0b" if is_focused else "#334155"
+                        item.border_width = 3 if is_focused else 1
+                    else:
+                        item.bgcolor = "#f59e0b" if is_focused else ("#0d9488" if i == 0 else "#2563eb")
+                        item.border = ft.border.all(3, "#ffffff" if is_focused else "transparent")
+                        item.data["text_ctrl"].color = "black" if is_focused else "white"
                 page.update()
                 return
 
@@ -740,13 +782,14 @@ def main(page: ft.Page):
 
             left_panel.border = ft.border.all(
                 3 if state["zone"] in ("tabs", "list") else 1,
-                "#38bdf8" if state["zone"] in ("tabs", "list") else "#1e293b",
+                "#f59e0b" if state["zone"] in ("tabs", "list") else "#1e293b",
             )
             right_panel.border = ft.border.all(
                 3 if state["zone"] == "right" else 1,
-                "#38bdf8" if state["zone"] == "right" else "#1e293b",
+                "#f59e0b" if state["zone"] == "right" else "#1e293b",
             )
 
+            # Zakładki u góry (TV / Filmy / Seriale)
             for i, b in enumerate(tab_buttons):
                 is_focused = state["zone"] == "tabs" and state["tab_idx"] == i
                 is_current_kind = (
@@ -754,31 +797,61 @@ def main(page: ft.Page):
                     or (i == 1 and state["kind"] == "vod")
                     or (i == 2 and state["kind"] == "series")
                 )
-                b.bgcolor = (
-                    "#f59e0b"
-                    if is_focused
-                    else ("#2563eb" if is_current_kind else "#161d30")
-                )
-                b.color = "black" if is_focused else "white"
+                base_t = b.data["base_text"]
+                if is_focused:
+                    b.bgcolor = "#f59e0b"
+                    b.border = ft.border.all(3, "#ffffff")
+                    b.data["text_ctrl"].color = "black"
+                    b.data["text_ctrl"].value = f"▶ {base_t}"
+                elif is_current_kind:
+                    b.bgcolor = "#2563eb"
+                    b.border = ft.border.all(2, "#60a5fa")
+                    b.data["text_ctrl"].color = "white"
+                    b.data["text_ctrl"].value = base_t
+                else:
+                    b.bgcolor = "#161d30"
+                    b.border = ft.border.all(1, "#1e293b")
+                    b.data["text_ctrl"].color = "#94a3b8"
+                    b.data["text_ctrl"].value = base_t
 
+            # Lista kategorii / kanałów / filmów
             for i, b in enumerate(list_item_buttons):
                 is_focused = state["zone"] == "list" and state["list_idx"] == i
-                b.bgcolor = "#0284c7" if is_focused else "#161d30"
-                b.color = "white"
+                base_t = b.data["base_text"]
+                if is_focused:
+                    b.bgcolor = "#0284c7"  # Jasny błękit dla aktywnej pozycji
+                    b.border = ft.border.all(3, "#f59e0b")  # Gruba żółta ramka
+                    b.data["text_ctrl"].color = "#ffffff"
+                    b.data["text_ctrl"].size = 15
+                    b.data["text_ctrl"].value = f"▶  {base_t}"
+                else:
+                    b.bgcolor = "#161d30"
+                    b.border = ft.border.all(1, "#1e293b")
+                    b.data["text_ctrl"].color = "#cbd5e1"
+                    b.data["text_ctrl"].size = 14
+                    b.data["text_ctrl"].value = base_t
 
+            # Przyciski po prawej stronie
             for i, b in enumerate(right_buttons):
-                is_focused = (
-                    state["zone"] == "right" and state["right_idx"] == i
-                )
-                b.bgcolor = "#f59e0b" if is_focused else "#1e293b"
-                b.color = "black" if is_focused else "white"
+                is_focused = state["zone"] == "right" and state["right_idx"] == i
+                base_t = b.data["base_text"]
+                if is_focused:
+                    b.bgcolor = "#f59e0b"
+                    b.border = ft.border.all(3, "#ffffff")
+                    b.data["text_ctrl"].color = "black"
+                    b.data["text_ctrl"].value = f"▶ {base_t}"
+                else:
+                    b.bgcolor = "#1e293b"
+                    b.border = ft.border.all(1, "#334155")
+                    b.data["text_ctrl"].color = "white"
+                    b.data["text_ctrl"].value = base_t
 
             page.update()
 
             if state["zone"] == "list" and list_item_buttons:
                 idx = max(0, min(state["list_idx"], len(list_item_buttons) - 1))
                 try:
-                    list_view.scroll_to(key=f"item_{idx}", duration=80)
+                    list_view.scroll_to(key=f"item_{idx}", duration=60)
                 except Exception:
                     pass
 
@@ -792,47 +865,41 @@ def main(page: ft.Page):
             list_item_buttons.clear()
             list_item_actions.clear()
 
-            q = (search_tf.value or "").strip().lower()
             v_mode = state["view_mode"]
+            kind_lbl = {"live": "TV NA ŻYWO", "vod": "FILMY (VOD)", "series": "SERIALE"}[state["kind"]]
 
             if v_mode == "categories":
                 raw = state["categories"].get(state["kind"], [])
+                list_header_lbl.value = f"📂 KATEGORIE: {kind_lbl} ({len(raw)})"
             elif v_mode == "episodes":
                 raw = state["episodes"]
+                list_header_lbl.value = f"🎞 {state['active_series_title']} ({len(raw)} odc.)"
             else:
                 raw = state["streams"]
+                cat_nm = (state["active_cat"] or {}).get("category_name", "Lista")
+                list_header_lbl.value = f"📺 {cat_nm} ({len(raw)} poz.)"
 
-            filtered = []
-            for it in raw:
-                nm = (
-                    it.get("category_name")
-                    if v_mode == "categories"
-                    else (it.get("name") or it.get("title") or "")
-                )
-                if not q or q in (nm or "").lower():
-                    filtered.append(it)
-            state["filtered"] = filtered
-
+            state["filtered"] = raw
             btn_idx = 0
 
-            # Przycisk powrotu
+            # Przycisk powrotu na górze listy
             if v_mode == "episodes":
-                b_back = ft.ElevatedButton(
-                    key=f"item_{btn_idx}",
-                    text="↩ Wróć do listy seriali",
+                b_back = make_tv_button(
+                    "↩ WRÓĆ DO LISTY SERIALI",
+                    back_to_streams,
+                    key_str=f"item_{btn_idx}",
                     height=44,
-                    on_click=lambda _: back_to_streams(),
                 )
                 list_item_buttons.append(b_back)
                 list_item_actions.append(back_to_streams)
                 list_view.controls.append(b_back)
                 btn_idx += 1
             elif v_mode == "streams" and not state["in_fav"]:
-                b_back = ft.ElevatedButton(
-                    key=f"item_{btn_idx}",
-                    text="↩ Wróć do listy kategorii",
+                b_back = make_tv_button(
+                    "↩ WRÓĆ DO KATEGORII",
+                    back_to_cats,
+                    key_str=f"item_{btn_idx}",
                     height=44,
-                    on_click=lambda _: back_to_cats(),
                 )
                 list_item_buttons.append(b_back)
                 list_item_actions.append(back_to_cats)
@@ -841,15 +908,15 @@ def main(page: ft.Page):
 
             start = state["page_offset"]
             end = start + PAGE_SIZE
-            slice_items = filtered[start:end]
+            slice_items = raw[start:end]
 
             # Przycisk poprzedniej strony
             if start > 0:
-                b_prev = ft.ElevatedButton(
-                    key=f"item_{btn_idx}",
-                    text=f"⬆ Poprzednie ({max(1, start - PAGE_SIZE + 1)} - {start})",
+                b_prev = make_tv_button(
+                    f"⬆ POPRZEDNIE ({max(1, start - PAGE_SIZE + 1)} - {start})",
+                    lambda: change_page(-PAGE_SIZE),
+                    key_str=f"item_{btn_idx}",
                     height=42,
-                    on_click=lambda _: change_page(-PAGE_SIZE),
                 )
                 list_item_buttons.append(b_prev)
                 list_item_actions.append(lambda: change_page(-PAGE_SIZE))
@@ -861,37 +928,27 @@ def main(page: ft.Page):
                 if v_mode == "categories":
                     cat_name = item.get("category_name", "Kategoria")
                     action_fn = lambda c=item: open_category(c)
-                    label = f"{real_num}. 📁 {cat_name}   ❯"
+                    label = f"{real_num}. 📁 [KATEGORIA] {cat_name}"
                 elif v_mode == "episodes":
                     ep_title = item.get("display_title") or item.get("title") or "Odcinek"
                     action_fn = lambda ep=item: play_episode(ep)
-                    label = f"{real_num}. ▶ {ep_title}"
+                    label = f"{real_num}. 🎞 {ep_title}"
                 else:
                     k = item.get("kind") or state["kind"]
-                    icon = (
-                        "📺"
+                    badge = (
+                        "[TV]"
                         if k == "live"
-                        else ("🎬" if k == "vod" else "🎞")
+                        else ("[FILM]" if k == "vod" else "[SERIAL]")
                     )
                     nm = item.get("name") or item.get("title") or "Pozycja"
                     action_fn = lambda it=item: on_stream_click(it)
-                    label = f"{real_num}. {icon} {nm}"
+                    label = f"{real_num}. {badge} {nm}"
 
-                b_item = ft.ElevatedButton(
-                    key=f"item_{btn_idx}",
-                    height=46,
-                    content=ft.Row(
-                        [
-                            ft.Text(
-                                label,
-                                weight=ft.FontWeight.BOLD,
-                                size=14,
-                                expand=True,
-                                no_wrap=True,
-                            )
-                        ]
-                    ),
-                    on_click=lambda _e, fn=action_fn: fn(),
+                b_item = make_tv_button(
+                    label,
+                    action_fn,
+                    key_str=f"item_{btn_idx}",
+                    height=48,
                 )
                 list_item_buttons.append(b_item)
                 list_item_actions.append(action_fn)
@@ -899,12 +956,12 @@ def main(page: ft.Page):
                 btn_idx += 1
 
             # Przycisk następnej strony
-            if end < len(filtered):
-                b_next = ft.ElevatedButton(
-                    key=f"item_{btn_idx}",
-                    text=f"⬇ Następne ({end + 1} - {min(len(filtered), end + PAGE_SIZE)}) z {len(filtered)}",
+            if end < len(raw):
+                b_next = make_tv_button(
+                    f"⬇ NASTĘPNE ({end + 1} - {min(len(raw), end + PAGE_SIZE)}) z {len(raw)}",
+                    lambda: change_page(PAGE_SIZE),
+                    key_str=f"item_{btn_idx}",
                     height=42,
-                    on_click=lambda _: change_page(PAGE_SIZE),
                 )
                 list_item_buttons.append(b_next)
                 list_item_actions.append(lambda: change_page(PAGE_SIZE))
@@ -915,11 +972,6 @@ def main(page: ft.Page):
                 state["list_idx"] = max(0, len(list_item_buttons) - 1)
 
             update_focus_styles()
-
-        search_tf.on_change = lambda _: (
-            state.update({"page_offset": 0, "list_idx": 0}),
-            render_list(),
-        )
 
         def back_to_streams():
             state["view_mode"] = "streams"
@@ -933,6 +985,9 @@ def main(page: ft.Page):
             state["page_offset"] = 0
             state["list_idx"] = 0
             if not state["categories"].get(state["kind"]):
+                list_header_lbl.value = "⏳ Pobieranie kategorii..."
+                page.update()
+
                 def _w():
                     try:
                         cats = (
@@ -941,7 +996,7 @@ def main(page: ft.Page):
                         state["categories"][state["kind"]] = [
                             {
                                 "category_id": "__ALL__",
-                                "category_name": "🔥 WSZYSTKIE",
+                                "category_name": "🔥 WSZYSTKIE POZYCJE",
                             }
                         ] + cats
                         render_list()
@@ -957,9 +1012,7 @@ def main(page: ft.Page):
             state["page_offset"] = 0
             state["list_idx"] = 0
             list_view.controls.clear()
-            list_view.controls.append(
-                ft.Text("⏳ Pobieranie listy z serwera...", color="#60a5fa")
-            )
+            list_header_lbl.value = f"⏳ Ładowanie: {cat_obj.get('category_name', '')}..."
             page.update()
 
             def _w():
@@ -998,9 +1051,7 @@ def main(page: ft.Page):
             if k == "series":
                 state["active_series_title"] = title
                 list_view.controls.clear()
-                list_view.controls.append(
-                    ft.Text(f"⏳ Pobieranie odcinków: {title}...", color="#60a5fa")
-                )
+                list_header_lbl.value = f"⏳ Pobieranie odcinków: {title}..."
                 page.update()
 
                 def _w():
@@ -1046,7 +1097,6 @@ def main(page: ft.Page):
             play_stream_url(url, title)
 
         def switch_tab(tab_key, tab_idx=0):
-            search_tf.value = ""
             state["tab_idx"] = tab_idx
             state["page_offset"] = 0
             state["list_idx"] = 0
@@ -1056,6 +1106,9 @@ def main(page: ft.Page):
             back_to_cats()
             publish_status()
 
+        # =====================================================================
+        # OBSŁUGA PILOTA ANDROID TV (Z BLOKADĄ PODWÓJNYCH SKOKÓW)
+        # =====================================================================
         def on_key_event(e: ft.KeyboardEvent):
             key = e.key
 
@@ -1067,6 +1120,11 @@ def main(page: ft.Page):
                     if state["login_idx"] > 0:
                         state["login_idx"] -= 1
                 elif key in ("Enter", "Select", " "):
+                    now = time.time()
+                    if now - state["last_ok_ts"] < 0.4:
+                        return
+                    state["last_ok_ts"] = now
+
                     idx = state["login_idx"]
                     if idx == 0:
                         open_remote_settings_dlg()
@@ -1136,6 +1194,12 @@ def main(page: ft.Page):
                         state["right_idx"] -= 1
 
             elif key in ("Enter", "Select", " ", "Media Play / Pause"):
+                # Debounce 450ms na przycisk OK z pilota - zapobiega podwójnemu otwieraniu
+                now = time.time()
+                if now - state["last_ok_ts"] < 0.45:
+                    return
+                state["last_ok_ts"] = now
+
                 if state["zone"] == "tabs":
                     kinds = ["live", "vod", "series"]
                     if 0 <= state["tab_idx"] < len(kinds):
@@ -1147,20 +1211,8 @@ def main(page: ft.Page):
                         list_item_actions[state["list_idx"]]()
                 elif state["zone"] == "right":
                     idx = state["right_idx"]
-                    if idx == 0:
-                        open_in_android_vlc()
-                    elif idx == 1:
-                        toggle_auto_vlc()
-                    elif idx == 2:
-                        toggle_play_pause()
-                    elif idx == 3:
-                        stop_playback()
-                    elif idx == 4:
-                        show_info_dialog()
-                    elif idx == 5:
-                        open_remote_settings_dlg()
-                    elif idx == 6:
-                        do_logout()
+                    if 0 <= idx < len(right_buttons):
+                        right_buttons[idx].data["action"]()
 
             elif key in ("Backspace", "Escape"):
                 if state["view_mode"] == "episodes":
@@ -1229,7 +1281,7 @@ def main(page: ft.Page):
             publish_status()
 
         # =========================================================================
-        # ODBIORNIK CHMURY (NTFY.SH) - ODBIERANIE LIST I KOMEND Z PANELU WWW
+        # ODBIORNIK CHMURY (NTFY.SH)
         # =========================================================================
         def apply_profile(prof):
             mode = prof.get("mode", "xtream")
@@ -1425,7 +1477,7 @@ def main(page: ft.Page):
                             ft.Row(
                                 [
                                     ft.Text(
-                                        "▶ IPTV V4.5 PRO ANDROID TV",
+                                        "▶ IPTV V4.6 PRO ANDROID TV",
                                         size=20,
                                         weight=ft.FontWeight.BOLD,
                                     ),
@@ -1455,11 +1507,17 @@ def main(page: ft.Page):
 
         left_panel.content = ft.Column(
             [
-                ft.Row(tab_buttons, spacing=4),
-                ft.Row([search_tf]),
+                ft.Row(tab_buttons, spacing=6),
+                ft.Container(
+                    content=list_header_lbl,
+                    padding=ft.padding.symmetric(horizontal=6, vertical=4),
+                    bgcolor="#0f172a",
+                    border_radius=6,
+                ),
                 list_view,
             ],
             expand=True,
+            spacing=8,
         )
 
         right_panel.content = ft.Column(
@@ -1477,8 +1535,7 @@ def main(page: ft.Page):
                     [
                         btn_vlc,
                         btn_auto_vlc,
-                        btn_play_pause,
-                        btn_stop,
+                        btn_scheme_vlc,
                         btn_tmdb,
                     ],
                     spacing=6,
