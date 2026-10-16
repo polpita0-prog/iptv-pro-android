@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Client V4.7 PRO - ANDROID TV EDITION
-Poprawki:
-- Całkowicie oczyszczone wcięcia (brak znaków U+00A0)
-- Nawigacja D-Pad oparta na ft.Container (brak konfliktów fokusu z systemem Android TV)
-- Wyraźne podświetlanie wybranej kategorii i kanału (żółta ramka + strzałka ▶ + kontrast)
-- Naprawione uruchamianie VLC: domyślny format vlc://serwer:port/... (bez podwójnego http://)
-  eliminuje błąd "Nie masz aplikacji" oraz błąd "Nie można odtworzyć kilku mediów"
+IPTV Client V4.8 PRO - ANDROID TV EDITION
+Poprawki V4.8:
+- Naprawiony ekran logowania: pola danych są kafelkami ft.Container (pilot płynnie przechodzi góra/dół
+  bez samoczynnego otwierania klawiatury; edycja tekstu następuje dopiero po wciśnięciu OK).
+- Naprawiony problem "podwójnego startu" po wyjściu z APK: kontrolowane zamykanie wątków w tle
+  oraz czyste zwalnianie procesu Pythona (os._exit) przy zamknięciu aplikacji.
 """
 
 import datetime
 import json
+import os
 import re
 import threading
 import time
@@ -116,7 +116,7 @@ class XtreamClient:
         self.session = make_session()
         self.user_info = {}
 
-    def _api(self, params, timeout=18):
+    def _api(self, params, timeout=15):
         url = f"{self.server}/player_api.php"
         full_params = {"username": self.username, "password": self.password}
         full_params.update(params)
@@ -148,7 +148,7 @@ class XtreamClient:
         params = {"action": action}
         if category_id and category_id != "__ALL__":
             params["category_id"] = category_id
-        return self._api(params, timeout=25) or []
+        return self._api(params, timeout=22) or []
 
     def get_series_info(self, series_id):
         return self._api({"action": "get_series_info", "series_id": series_id})
@@ -178,7 +178,7 @@ class M3UClient:
         self.direct_urls = {}
 
     def login(self):
-        r = self.session.get(self.source, timeout=25)
+        r = self.session.get(self.source, timeout=22)
         r.raise_for_status()
         r.encoding = r.apparent_encoding or "utf-8"
         self._parse_m3u(r.text)
@@ -323,10 +323,24 @@ def safe_storage_set(page, key, val):
 
 def main(page: ft.Page):
     try:
-        page.title = "IPTV V4.7 PRO Android TV"
+        page.title = "IPTV V4.8 PRO Android TV"
         page.theme_mode = ft.ThemeMode.DARK
         page.bgcolor = "#0b0e17"
         page.padding = 10
+
+        # Flaga życia aplikacji (zapobiega wieszaniu się procesu Pythona w tle po wyjściu)
+        app_running = {"active": True, "dialog_open": False}
+
+        def close_app_cleanly(_e=None):
+            app_running["active"] = False
+            try:
+                page.window_destroy()
+            except Exception:
+                pass
+            os._exit(0)
+
+        page.on_disconnect = lambda _: app_running.update({"active": False})
+        page.on_close = lambda _: close_app_cleanly()
 
         device_id = safe_storage_get(page, "device_id")
         if not device_id:
@@ -347,6 +361,14 @@ def main(page: ft.Page):
         }
         if saved_vlc_mode not in VLC_MODE_LABELS:
             saved_vlc_mode = "vlc_clean"
+
+        # Dane logowania przechowywane w słowniku (zamiast bezpośrednich TextField na ekranie)
+        creds = {
+            "server": safe_storage_get(page, "server", "http://"),
+            "username": safe_storage_get(page, "username", ""),
+            "password": safe_storage_get(page, "password", ""),
+            "m3u_url": safe_storage_get(page, "m3u_url", ""),
+        }
 
         state = {
             "client": None,
@@ -380,7 +402,7 @@ def main(page: ft.Page):
 
         PAGE_SIZE = 50
 
-        # Funkcja pomocnicza tworząca kafelki odporne na "kradzież" fokusu przez Androida
+        # Funkcja pomocnicza tworząca kafelki odporne na "kradzież" fokusu i klawiatury przez Androida
         def make_tv_button(text_str, on_click_fn, key_str=None, height=46, expand=False):
             txt_ctrl = ft.Text(
                 text_str,
@@ -410,6 +432,9 @@ def main(page: ft.Page):
             box.data["text_ctrl"].value = new_text
 
         def publish_status():
+            if not app_running["active"]:
+                return
+
             def _worker():
                 try:
                     local_session = make_session()
@@ -467,7 +492,7 @@ def main(page: ft.Page):
                         data=json.dumps(snapshot, ensure_ascii=False).encode(
                             "utf-8"
                         ),
-                        timeout=6,
+                        timeout=4,
                     )
                 except Exception:
                     pass
@@ -535,25 +560,69 @@ def main(page: ft.Page):
             size=13,
         )
 
-        srv_tf = ft.TextField(
-            label="Adres serwera (http://serwer:8080)",
-            value=safe_storage_get(page, "server", "http://"),
-        )
-        usr_tf = ft.TextField(
-            label="Użytkownik", value=safe_storage_get(page, "username", "")
-        )
-        pas_tf = ft.TextField(
-            label="Hasło",
-            password=True,
-            can_reveal_password=True,
-            value=safe_storage_get(page, "password", ""),
-        )
-        m3u_tf = ft.TextField(
-            label="Lub link do listy M3U / M3U8",
-            value=safe_storage_get(page, "m3u_url", ""),
-        )
+        # =====================================================================
+        # KAFELKI EKRANU LOGOWANIA (BRAK SAMOCZYNNEGO OTWIERANIA KLAWIATURY!)
+        # =====================================================================
+        def format_cred_label(field_key):
+            if field_key == "server":
+                val = creds["server"] or "(brak)"
+                return f"🌐 Serwer: {val}"
+            if field_key == "username":
+                val = creds["username"] or "(kliknij OK, aby wpisać)"
+                return f"👤 Użytkownik: {val}"
+            if field_key == "password":
+                val = ("*" * len(creds["password"])) if creds["password"] else "(kliknij OK, aby wpisać)"
+                return f"🔑 Hasło: {val}"
+            if field_key == "m3u_url":
+                val = (creds["m3u_url"][:38] + "...") if len(creds["m3u_url"]) > 38 else (creds["m3u_url"] or "(opcjonalnie link M3U)")
+                return f"📋 Lista M3U: {val}"
+            return ""
+
+        def refresh_login_button_labels():
+            set_tv_button_text(btn_edit_srv, format_cred_label("server"))
+            set_tv_button_text(btn_edit_usr, format_cred_label("username"))
+            set_tv_button_text(btn_edit_pas, format_cred_label("password"))
+            set_tv_button_text(btn_edit_m3u, format_cred_label("m3u_url"))
+
+        def open_field_editor(field_key, title_str, is_pass=False):
+            app_running["dialog_open"] = True
+            tf_in = ft.TextField(
+                label=title_str,
+                value=creds.get(field_key, ""),
+                password=is_pass,
+                can_reveal_password=is_pass,
+                autofocus=True,
+                on_submit=lambda _: _save_field(),
+            )
+
+            def _save_field(_e=None):
+                creds[field_key] = (tf_in.value or "").strip() if field_key != "password" else (tf_in.value or "")
+                safe_storage_set(page, field_key, creds[field_key])
+                refresh_login_button_labels()
+                dlg.open = False
+                app_running["dialog_open"] = False
+                update_focus_styles()
+
+            def _cancel_field(_e=None):
+                dlg.open = False
+                app_running["dialog_open"] = False
+                update_focus_styles()
+
+            dlg = ft.AlertDialog(
+                title=ft.Text(f"✏️ Edytuj: {title_str}"),
+                content=ft.Column([tf_in], tight=True),
+                actions=[
+                    ft.ElevatedButton("Anuluj", on_click=_cancel_field),
+                    ft.ElevatedButton("💾 Zapisz", on_click=_save_field, bgcolor="#2563eb", color="white"),
+                ],
+                on_dismiss=lambda _: app_running.update({"dialog_open": False}),
+            )
+            page.overlay.append(dlg)
+            dlg.open = True
+            page.update()
 
         def open_remote_settings_dlg(_e=None):
+            app_running["dialog_open"] = True
             name_in = ft.TextField(
                 label="Nazwa własna tego odbiornika",
                 value=safe_storage_get(page, "device_name", device_name),
@@ -574,6 +643,7 @@ def main(page: ft.Page):
                 header_dev_lbl.value = f"📺 {nn} [{ni}]"
                 status_banner.value = f"🟢 Zdalny Cloud aktywny — Kod ID: {ni}"
                 dlg.open = False
+                app_running["dialog_open"] = False
                 page.update()
                 publish_status()
 
@@ -599,21 +669,45 @@ def main(page: ft.Page):
                         color="white",
                     )
                 ],
+                on_dismiss=lambda _: app_running.update({"dialog_open": False}),
             )
             page.overlay.append(dlg)
             dlg.open = True
             page.update()
 
-        btn_remote_id = make_tv_button("🌐 Nazwa / Kod ID", open_remote_settings_dlg, height=44)
-        btn_submit_login = make_tv_button("🚀 POŁĄCZ Z SERWEREM", lambda: do_login(), height=48)
+        btn_remote_id = make_tv_button("🌐 Zmień Nazwę / Kod ID Odbiornika", open_remote_settings_dlg, height=44)
+        btn_edit_srv = make_tv_button(
+            format_cred_label("server"),
+            lambda: open_field_editor("server", "Adres serwera (http://serwer:8080)"),
+            height=46,
+        )
+        btn_edit_usr = make_tv_button(
+            format_cred_label("username"),
+            lambda: open_field_editor("username", "Nazwa użytkownika"),
+            height=46,
+        )
+        btn_edit_pas = make_tv_button(
+            format_cred_label("password"),
+            lambda: open_field_editor("password", "Hasło", is_pass=True),
+            height=46,
+        )
+        btn_edit_m3u = make_tv_button(
+            format_cred_label("m3u_url"),
+            lambda: open_field_editor("m3u_url", "Link do listy M3U / M3U8"),
+            height=46,
+        )
+        btn_submit_login = make_tv_button("🚀 POŁĄCZ Z SERWEREM", lambda: do_login(), height=50)
+        btn_exit_app = make_tv_button("🚪 ZAMKNIJ APLIKACJĘ", close_app_cleanly, height=44)
 
+        # Wszystkie elementy na ekranie logowania to teraz kontenery - zero blokowania pilota przez klawiaturę!
         login_items = [
             btn_remote_id,
-            srv_tf,
-            usr_tf,
-            pas_tf,
-            m3u_tf,
+            btn_edit_srv,
+            btn_edit_usr,
+            btn_edit_pas,
+            btn_edit_m3u,
             btn_submit_login,
+            btn_exit_app,
         ]
 
         # =====================================================================
@@ -634,10 +728,8 @@ def main(page: ft.Page):
             scheme = "https" if clean_u.lower().startswith("https://") else "http"
 
             if mode == "vlc_clean":
-                # vlc://serwer:port/live/... (Brak podwójnego http:// -> brak błędu wielu mediów!)
                 target_url = f"vlc://{no_proto}"
             elif mode == "intent":
-                # Natywny Android Intent wskazujący pakiet org.videolan.vlc
                 target_url = (
                     f"intent://{no_proto}#Intent;"
                     f"scheme={scheme};"
@@ -752,6 +844,7 @@ def main(page: ft.Page):
         btn_tmdb = make_tv_button("ℹ Opis TMDB", show_info_dialog, height=42)
         btn_cloud_id = make_tv_button("🌐 Kod ID", open_remote_settings_dlg, height=42)
         btn_logout = make_tv_button("⇄ Zmień serwer", lambda: do_logout(), height=42)
+        btn_quit_dash = make_tv_button("🚪 Wyjdź", close_app_cleanly, height=42)
 
         right_buttons = [
             btn_vlc,
@@ -760,6 +853,7 @@ def main(page: ft.Page):
             btn_tmdb,
             btn_cloud_id,
             btn_logout,
+            btn_quit_dash,
         ]
         list_item_buttons = []
         list_item_actions = []
@@ -791,13 +885,24 @@ def main(page: ft.Page):
                     is_focused = (
                         state["zone"] == "login" and state["login_idx"] == i
                     )
-                    if isinstance(item, ft.TextField):
-                        item.border_color = "#f59e0b" if is_focused else "#334155"
-                        item.border_width = 3 if is_focused else 1
+                    base_t = item.data["base_text"]
+                    if is_focused:
+                        item.bgcolor = "#f59e0b"
+                        item.border = ft.border.all(3, "#ffffff")
+                        item.data["text_ctrl"].color = "black"
+                        item.data["text_ctrl"].value = f"▶  {base_t}"
                     else:
-                        item.bgcolor = "#f59e0b" if is_focused else ("#0d9488" if i == 0 else "#2563eb")
-                        item.border = ft.border.all(3, "#ffffff" if is_focused else "transparent")
-                        item.data["text_ctrl"].color = "black" if is_focused else "white"
+                        if i == 0:
+                            item.bgcolor = "#0d9488"
+                        elif i == len(login_items) - 2:
+                            item.bgcolor = "#2563eb"
+                        elif i == len(login_items) - 1:
+                            item.bgcolor = "#7f1d1d"
+                        else:
+                            item.bgcolor = "#161d30"
+                        item.border = ft.border.all(1, "#334155")
+                        item.data["text_ctrl"].color = "white"
+                        item.data["text_ctrl"].value = base_t
                 page.update()
                 return
 
@@ -843,8 +948,8 @@ def main(page: ft.Page):
                 is_focused = state["zone"] == "list" and state["list_idx"] == i
                 base_t = b.data["base_text"]
                 if is_focused:
-                    b.bgcolor = "#0284c7"  # Jasny błękit dla aktywnej pozycji
-                    b.border = ft.border.all(3, "#f59e0b")  # Gruba żółta ramka
+                    b.bgcolor = "#0284c7"
+                    b.border = ft.border.all(3, "#f59e0b")
                     b.data["text_ctrl"].color = "#ffffff"
                     b.data["text_ctrl"].size = 15
                     b.data["text_ctrl"].value = f"▶  {base_t}"
@@ -906,7 +1011,6 @@ def main(page: ft.Page):
             state["filtered"] = raw
             btn_idx = 0
 
-            # Przycisk powrotu na górze listy
             if v_mode == "episodes":
                 b_back = make_tv_button(
                     "↩ WRÓĆ DO LISTY SERIALI",
@@ -934,7 +1038,6 @@ def main(page: ft.Page):
             end = start + PAGE_SIZE
             slice_items = raw[start:end]
 
-            # Przycisk poprzedniej strony
             if start > 0:
                 b_prev = make_tv_button(
                     f"⬆ POPRZEDNIE ({max(1, start - PAGE_SIZE + 1)} - {start})",
@@ -979,7 +1082,6 @@ def main(page: ft.Page):
                 list_view.controls.append(b_item)
                 btn_idx += 1
 
-            # Przycisk następnej strony
             if end < len(raw):
                 b_next = make_tv_button(
                     f"⬇ NASTĘPNE ({end + 1} - {min(len(raw), end + PAGE_SIZE)}) z {len(raw)}",
@@ -1131,9 +1233,12 @@ def main(page: ft.Page):
             publish_status()
 
         # =====================================================================
-        # OBSŁUGA PILOTA ANDROID TV (Z BLOKADĄ PODWÓJNYCH SKOKÓW)
+        # OBSŁUGA PILOTA ANDROID TV (PŁYNNE PRZESUWANIE GÓRA/DÓŁ NA LOGOWANIU)
         # =====================================================================
         def on_key_event(e: ft.KeyboardEvent):
+            if app_running["dialog_open"]:
+                return
+
             key = e.key
 
             if login_view.visible:
@@ -1150,16 +1255,8 @@ def main(page: ft.Page):
                     state["last_ok_ts"] = now
 
                     idx = state["login_idx"]
-                    if idx == 0:
-                        open_remote_settings_dlg()
-                    elif idx == len(login_items) - 1:
-                        do_login()
-                    else:
-                        item = login_items[idx]
-                        try:
-                            item.focus()
-                        except Exception:
-                            pass
+                    if 0 <= idx < len(login_items):
+                        login_items[idx].data["action"]()
                 update_focus_styles()
                 return
 
@@ -1218,7 +1315,6 @@ def main(page: ft.Page):
                         state["right_idx"] -= 1
 
             elif key in ("Enter", "Select", " ", "Media Play / Pause"):
-                # Debounce 450ms na przycisk OK z pilota - zapobiega podwójnemu otwieraniu
                 now = time.time()
                 if now - state["last_ok_ts"] < 0.45:
                     return
@@ -1255,10 +1351,10 @@ def main(page: ft.Page):
 
             def _w():
                 try:
-                    m3u_val = m3u_tf.value.strip()
-                    srv_val = srv_tf.value.strip()
-                    usr_val = usr_tf.value.strip()
-                    pas_val = pas_tf.value
+                    m3u_val = creds["m3u_url"].strip()
+                    srv_val = creds["server"].strip()
+                    usr_val = creds["username"].strip()
+                    pas_val = creds["password"]
 
                     if m3u_val and (not usr_val or not pas_val):
                         ext = extract_xtream_from_m3u_url(m3u_val)
@@ -1314,15 +1410,16 @@ def main(page: ft.Page):
             if mode == "m3u" or (
                 prof.get("m3u_url") and not prof.get("username")
             ):
-                m3u_tf.value = prof.get("m3u_url") or prof.get("url") or ""
-                srv_tf.value = "http://"
-                usr_tf.value = ""
-                pas_tf.value = ""
+                creds["m3u_url"] = prof.get("m3u_url") or prof.get("url") or ""
+                creds["server"] = "http://"
+                creds["username"] = ""
+                creds["password"] = ""
             else:
-                srv_tf.value = prof.get("server") or prof.get("host") or ""
-                usr_tf.value = prof.get("username") or prof.get("user") or ""
-                pas_tf.value = prof.get("password") or prof.get("pass") or ""
-                m3u_tf.value = ""
+                creds["server"] = prof.get("server") or prof.get("host") or ""
+                creds["username"] = prof.get("username") or prof.get("user") or ""
+                creds["password"] = prof.get("password") or prof.get("pass") or ""
+                creds["m3u_url"] = ""
+            refresh_login_button_labels()
             page.update()
             do_login()
 
@@ -1446,7 +1543,7 @@ def main(page: ft.Page):
         def cloud_listener():
             nonlocal processed_ids
             listener_session = make_session()
-            while True:
+            while app_running["active"]:
                 try:
                     clean_id = re.sub(
                         r"[^a-zA-Z0-9_-]",
@@ -1455,8 +1552,8 @@ def main(page: ft.Page):
                     )
                     topics = f"iptv_v4_pro_{clean_id},iptv_v4_pro_{clean_id}_cmd"
                     url = f"https://ntfy.sh/{topics}/json?poll=1&since=30m"
-                    r = listener_session.get(url, timeout=10)
-                    if r.status_code == 200:
+                    r = listener_session.get(url, timeout=5)
+                    if r.status_code == 200 and app_running["active"]:
                         for line in r.text.splitlines():
                             if not line.strip():
                                 continue
@@ -1489,7 +1586,10 @@ def main(page: ft.Page):
                             handle_remote_command(payload)
                 except Exception:
                     pass
-                time.sleep(2.5)
+                for _ in range(5):
+                    if not app_running["active"]:
+                        break
+                    time.sleep(0.5)
 
         threading.Thread(target=cloud_listener, daemon=True).start()
 
@@ -1498,30 +1598,33 @@ def main(page: ft.Page):
                 ft.Container(
                     content=ft.Column(
                         [
-                            ft.Row(
-                                [
-                                    ft.Text(
-                                        "▶ IPTV V4.7 PRO ANDROID TV",
-                                        size=20,
-                                        weight=ft.FontWeight.BOLD,
-                                    ),
-                                    btn_remote_id,
-                                ],
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            ft.Text(
+                                "▶ IPTV V4.8 PRO ANDROID TV",
+                                size=20,
+                                weight=ft.FontWeight.BOLD,
+                                color="#38bdf8",
                             ),
                             status_banner,
-                            srv_tf,
-                            usr_tf,
-                            pas_tf,
-                            m3u_tf,
+                            ft.Text(
+                                "Użyj strzałek ⬆️ ⬇️ na pilocie, aby wybrać pole. Naciśnij OK, aby edytować.",
+                                size=12,
+                                color="#94a3b8",
+                            ),
+                            btn_remote_id,
+                            btn_edit_srv,
+                            btn_edit_usr,
+                            btn_edit_pas,
+                            btn_edit_m3u,
                             btn_submit_login,
+                            btn_exit_app,
                         ],
-                        spacing=10,
+                        spacing=8,
                     ),
                     bgcolor="#111625",
-                    padding=24,
+                    padding=20,
                     border_radius=12,
-                    width=540,
+                    width=560,
+                    border=ft.border.all(2, "#1e293b"),
                 )
             ],
             alignment=ft.MainAxisAlignment.CENTER,
@@ -1549,7 +1652,7 @@ def main(page: ft.Page):
                 ft.Row(
                     [
                         header_dev_lbl,
-                        ft.Row([btn_cloud_id, btn_logout], spacing=6),
+                        ft.Row([btn_cloud_id, btn_logout, btn_quit_dash], spacing=6),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
