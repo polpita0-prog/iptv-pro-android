@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Client V4.4 PRO - ANDROID TV EDITION (Fixed Remote Focus)
+IPTV Client V4.4 PRO - ANDROID TV EDITION (Fixed Remote Focus & Navigation)
 ---------------------------------------------------------------------------------------
 """
 
@@ -320,7 +320,6 @@ def main(page: ft.Page):
         "vod": [],
         "series": [],
     }
-    processed_ids = set(page.client_storage.get("processed_ids") or [])
     auto_vlc_saved = page.client_storage.get("auto_vlc")
     if auto_vlc_saved is None:
         auto_vlc_saved = True
@@ -342,7 +341,7 @@ def main(page: ft.Page):
         "volume": 100,
         "muted": False,
         "auto_vlc": bool(auto_vlc_saved),
-        "zone": "list",  # Startujemy od razu na liście w lewym oknie!
+        "zone": "list",  # "tabs", "list", "right"
         "tab_idx": 0,
         "list_idx": 0,
         "right_idx": 0,
@@ -350,9 +349,7 @@ def main(page: ft.Page):
     }
 
     PAGE_SIZE = 60
-
     session = make_session()
-    start_ts = int(time.time()) - 180
 
     def publish_status():
         def _worker():
@@ -704,7 +701,7 @@ def main(page: ft.Page):
             if is_cat:
                 cat_name = item.get("category_name", "Kategoria")
                 action_fn = lambda c=item: open_category(c)
-                label = f"{real_num}. 📁 {cat_name}  ❯"
+                label = f"{real_num}. 📁 {cat_name}   ❯"
             else:
                 k = item.get("kind") or state["kind"]
                 icon = "📺" if k == "live" else ("🎬" if k == "vod" else "🎞")
@@ -746,7 +743,6 @@ def main(page: ft.Page):
         state["page_offset"] = 0
         state["list_idx"] = 0
         if not state["categories"].get(state["kind"]):
-
             def _w():
                 try:
                     cats = state["client"].get_categories(state["kind"]) or []
@@ -756,7 +752,6 @@ def main(page: ft.Page):
                     render_list()
                 except Exception:
                     pass
-
             threading.Thread(target=_w, daemon=True).start()
         else:
             render_list()
@@ -793,7 +788,6 @@ def main(page: ft.Page):
         k = item.get("kind") or state["kind"]
         title = item.get("name") or item.get("title") or "Strumień"
         if k == "series":
-
             def _w():
                 try:
                     info = state["client"].get_series_info(
@@ -815,7 +809,6 @@ def main(page: ft.Page):
                         )
                 except Exception:
                     pass
-
             threading.Thread(target=_w, daemon=True).start()
             return
 
@@ -857,7 +850,6 @@ def main(page: ft.Page):
             elif state["zone"] == "right":
                 if state["right_idx"] < len(right_buttons) - 1:
                     state["right_idx"] += 1
-            update_focus_styles()
 
         elif key == "Arrow Left":
             if state["zone"] == "right":
@@ -868,19 +860,17 @@ def main(page: ft.Page):
             elif state["zone"] == "tabs":
                 if state["tab_idx"] > 0:
                     state["tab_idx"] -= 1
-            update_focus_styles()
 
         elif key == "Arrow Down":
             if state["zone"] == "tabs":
                 state["zone"] = "list"
                 state["list_idx"] = 0
             elif state["zone"] == "list":
-                if state["list_idx"] < len(list_item_buttons) - 1:
+                if list_item_buttons and state["list_idx"] < len(list_item_buttons) - 1:
                     state["list_idx"] += 1
             elif state["zone"] == "right":
-                if state["right_idx"] < len(right_buttons) - 1:
+                if right_buttons and state["right_idx"] < len(right_buttons) - 1:
                     state["right_idx"] += 1
-            update_focus_styles()
 
         elif key == "Arrow Up":
             if state["zone"] == "list":
@@ -891,14 +881,14 @@ def main(page: ft.Page):
             elif state["zone"] == "right":
                 if state["right_idx"] > 0:
                     state["right_idx"] -= 1
-            update_focus_styles()
 
-        elif key in ("Enter", "Select", " "):
+        elif key in ("Enter", "Select", " ", "Media Play / Pause"):
             if state["zone"] == "tabs":
                 kinds = ["live", "vod", "series"]
-                switch_tab(kinds[state["tab_idx"]], state["tab_idx"])
+                if 0 <= state["tab_idx"] < len(kinds):
+                    switch_tab(kinds[state["tab_idx"]], state["tab_idx"])
             elif state["zone"] == "list":
-                if 0 <= state["list_idx"] < len(list_item_actions):
+                if list_item_actions and 0 <= state["list_idx"] < len(list_item_actions):
                     list_item_actions[state["list_idx"]]()
             elif state["zone"] == "right":
                 idx = state["right_idx"]
@@ -920,6 +910,8 @@ def main(page: ft.Page):
         elif key in ("Backspace", "Escape"):
             if state["view_mode"] == "streams" and not state["in_fav"]:
                 back_to_cats()
+
+        update_focus_styles()
 
     page.on_keyboard_event = on_key_event
 
@@ -985,7 +977,7 @@ def main(page: ft.Page):
             value=page.client_storage.get("device_name") or device_name,
         )
         id_in = ft.TextField(
-            label="Unikalny Kod ID (wpisz ten sam w panel_zdalny.html)",
+            label="Unikalny Kod ID",
             value=page.client_storage.get("device_id") or device_id,
         )
 
@@ -1006,7 +998,7 @@ def main(page: ft.Page):
             content=ft.Column(
                 [
                     ft.Text(
-                        "Wpisz ten Kod ID w pliku panel_zdalny.html w przeglądarce:",
+                        "Wpisz ten Kod ID w panelu sterowania:",
                         size=12,
                     ),
                     name_in,
