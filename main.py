@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Client V4.4 PRO - ANDROID TV EDITION (Fixed Login & Remote Navigation)
+IPTV Client V4.4 PRO - ANDROID TV EDITION (Fixed Remote & External VLC Playback)
 ---------------------------------------------------------------------------------------
 """
 
@@ -336,7 +336,7 @@ def main(page: ft.Page):
         "volume": 100,
         "muted": False,
         "auto_vlc": bool(auto_vlc_saved),
-        "zone": "login",  # Początkowa strefa na ekranie logowania
+        "zone": "login",
         "tab_idx": 0,
         "list_idx": 0,
         "right_idx": 0,
@@ -411,13 +411,32 @@ def main(page: ft.Page):
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    video_player = ft.Video(
+    # Zastąpienie wbudowanego odtwarzacza stabilnym panelem informacyjnym dla VLC
+    video_placeholder = ft.Container(
+        content=ft.Column(
+            [
+                ft.Icon(ft.Icons.TV_ROUNDED, size=64, color="#38bdf8"),
+                ft.Text(
+                    "Odtwarzacz zewnętrzny VLC",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color="white",
+                ),
+                ft.Text(
+                    "Strumienie uruchamiają się bezpośrednio w aplikacji VLC.",
+                    size=12,
+                    color="#94a3b8",
+                    text_align=ft.TextAlign.CENTER,
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=10,
+        ),
         expand=True,
-        playlist=[],
-        autoplay=True,
-        volume=100,
-        aspect_ratio=16 / 9,
-        show_controls=True,
+        bgcolor="#0f172a",
+        border_radius=8,
+        border=ft.border.all(1, "#1e293b"),
     )
 
     now_playing_txt = ft.Text(
@@ -535,15 +554,13 @@ def main(page: ft.Page):
         if not raw_url:
             return
         clean_u = raw_url.strip()
-        vlc_url = clean_u if clean_u.startswith("vlc://") else f"vlc://{clean_u}"
-        now_playing_txt.value = (
-            f"🚀 Otwieranie w VLC: {title or state['now_playing']}"
-        )
+        now_playing_txt.value = f"🚀 Otwieranie w VLC: {title or state['now_playing']}"
         now_playing_txt.update()
         try:
-            page.launch_url(vlc_url)
-        except Exception:
-            pass
+            page.launch_url(clean_u)
+        except Exception as ex:
+            now_playing_txt.value = f"❌ Błąd VLC: {ex}"
+            now_playing_txt.update()
 
     def open_in_android_vlc(_e=None):
         launch_vlc_intent(state["playing_url"], state["now_playing"])
@@ -562,18 +579,10 @@ def main(page: ft.Page):
         state["is_playing"] = True
         state["paused"] = False
         now_playing_txt.value = f"▶ {title}"
-
-        if state["auto_vlc"]:
-            launch_vlc_intent(url, title)
-        else:
-            try:
-                video_player.playlist_clear()
-                video_player.playlist_add(ft.VideoMedia(url))
-                video_player.play()
-            except Exception:
-                launch_vlc_intent(url, title)
-
         page.update()
+
+        # Bezpośrednie uruchomienie odtwarzacza zewnętrznego VLC
+        launch_vlc_intent(url, title)
         publish_status()
 
     def stop_playback(_e=None):
@@ -581,19 +590,12 @@ def main(page: ft.Page):
         state["paused"] = False
         state["now_playing"] = "Brak aktywnego strumienia"
         now_playing_txt.value = "⏹ Zatrzymano odtwarzanie"
-        try:
-            video_player.stop()
-        except Exception:
-            pass
         page.update()
         publish_status()
 
     def toggle_play_pause(_e=None):
-        try:
-            video_player.play_or_pause()
-            state["paused"] = not state["paused"]
-        except Exception:
-            pass
+        state["paused"] = not state["paused"]
+        now_playing_txt.value = "⏸ PAUZA" if state["paused"] else f"▶ {state['now_playing']}"
         page.update()
         publish_status()
 
@@ -921,7 +923,6 @@ def main(page: ft.Page):
                 elif idx == len(login_items) - 1:
                     do_login()
                 else:
-                    # Skupienie na polu tekstowym
                     item = login_items[idx]
                     if hasattr(item, "focus"):
                         item.focus()
@@ -1121,12 +1122,7 @@ def main(page: ft.Page):
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),
-            ft.Container(
-                content=video_player,
-                expand=True,
-                bgcolor="black",
-                border_radius=8,
-            ),
+            video_placeholder,  # Użycie stabilnego panelu zamiast błędu wideo
             now_playing_txt,
             ft.Row(
                 [
