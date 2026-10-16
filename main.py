@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Client V4.4 PRO - ANDROID TV EDITION (Safe Boot & VLC Intent)
+IPTV Client V4.4 PRO - ANDROID TV EDITION (Safe Boot + VLC + Cloud Listener)
 ---------------------------------------------------------------------------------------
 """
 
@@ -330,6 +330,7 @@ def main(page: ft.Page):
 
         device_name = safe_storage_get(page, "device_name", "Android TV Box")
         profiles = safe_storage_get(page, "profiles", [])
+        processed_ids = set(safe_storage_get(page, "processed_ids", []))
         auto_vlc_saved = safe_storage_get(page, "auto_vlc", True)
 
         state = {
@@ -396,7 +397,9 @@ def main(page: ft.Page):
 
                     snapshot = {
                         "type": "player_status",
-                        "device_name": safe_storage_get(page, "device_name", device_name),
+                        "device_name": safe_storage_get(
+                            page, "device_name", device_name
+                        ),
                         "device_id": clean_id,
                         "ts": int(time.time() * 1000),
                         "time_str": datetime.datetime.now().strftime("%H:%M:%S"),
@@ -422,7 +425,6 @@ def main(page: ft.Page):
 
             threading.Thread(target=_worker, daemon=True).start()
 
-        # Bezpieczny panel zastępujący wideo (bez ft.Icons, które mogło powodować crash)
         video_placeholder = ft.Container(
             content=ft.Column(
                 [
@@ -510,11 +512,13 @@ def main(page: ft.Page):
             def _save(_):
                 nn = name_in.value.strip() or "Android TV"
                 ni = (
-                    re.sub(r"[^a-zA-Z0-9_-]", "", id_in.value.strip()) or device_id
+                    re.sub(r"[^a-zA-Z0-9_-]", "", id_in.value.strip())
+                    or device_id
                 )
                 safe_storage_set(page, "device_name", nn)
                 safe_storage_set(page, "device_id", ni)
                 header_dev_lbl.value = f"📺 {nn} [{ni}]"
+                status_banner.value = f"🟢 Zdalny Cloud aktywny — Kod ID: {ni}"
                 dlg.open = False
                 page.update()
                 publish_status()
@@ -524,7 +528,7 @@ def main(page: ft.Page):
                 content=ft.Column(
                     [
                         ft.Text(
-                            "Wpisz ten Kod ID w panelu sterowania:",
+                            "Wpisz dokładnie ten sam Kod ID w panelu sterowania WWW:",
                             size=12,
                         ),
                         name_in,
@@ -535,7 +539,10 @@ def main(page: ft.Page):
                 ),
                 actions=[
                     ft.ElevatedButton(
-                        "💾 Zapisz", on_click=_save, bgcolor="#2563eb", color="white"
+                        "💾 Zapisz",
+                        on_click=_save,
+                        bgcolor="#2563eb",
+                        color="white",
                     )
                 ],
             )
@@ -557,7 +564,14 @@ def main(page: ft.Page):
             height=48,
         )
 
-        login_items = [btn_remote_id, srv_tf, usr_tf, pas_tf, m3u_tf, btn_submit_login]
+        login_items = [
+            btn_remote_id,
+            srv_tf,
+            usr_tf,
+            pas_tf,
+            m3u_tf,
+            btn_submit_login,
+        ]
 
         def launch_vlc_intent(raw_url: str, title: str = ""):
             if not raw_url:
@@ -568,9 +582,11 @@ def main(page: ft.Page):
             )
             page.update()
             try:
-                # Używamy schematu vlc://, aby Android przekierował strumień prosto do aplikacji VLC,
-                # zamiast otwierać pustą kartę w przeglądarce systemowej
-                vlc_url = clean_u if clean_u.startswith("vlc://") else f"vlc://{clean_u}"
+                vlc_url = (
+                    clean_u
+                    if clean_u.startswith("vlc://")
+                    else f"vlc://{clean_u}"
+                )
                 page.launch_url(vlc_url)
             except Exception as ex:
                 now_playing_txt.value = f"❌ Błąd VLC: {ex}"
@@ -650,7 +666,9 @@ def main(page: ft.Page):
             "⏯ Play/Pauza", on_click=toggle_play_pause
         )
         btn_stop = ft.ElevatedButton("⏹ Stop", on_click=stop_playback)
-        btn_vlc = ft.ElevatedButton("🚀 Otwórz w VLC", on_click=open_in_android_vlc)
+        btn_vlc = ft.ElevatedButton(
+            "🚀 Otwórz w VLC", on_click=open_in_android_vlc
+        )
         btn_auto_vlc = ft.ElevatedButton(
             f"Tryb VLC: {'WŁ.' if state['auto_vlc'] else 'WYŁ.'}",
             on_click=toggle_auto_vlc,
@@ -659,7 +677,9 @@ def main(page: ft.Page):
         btn_cloud_id = ft.ElevatedButton(
             "🌐 Kod ID", on_click=lambda _: open_remote_settings_dlg()
         )
-        btn_logout = ft.ElevatedButton("⇄ Zmień serwer", on_click=lambda _: do_logout())
+        btn_logout = ft.ElevatedButton(
+            "⇄ Zmień serwer", on_click=lambda _: do_logout()
+        )
 
         right_buttons = [
             btn_vlc,
@@ -694,9 +714,13 @@ def main(page: ft.Page):
         def update_focus_styles():
             if login_view.visible:
                 for i, item in enumerate(login_items):
-                    is_focused = state["zone"] == "login" and state["login_idx"] == i
+                    is_focused = (
+                        state["zone"] == "login" and state["login_idx"] == i
+                    )
                     if isinstance(item, ft.TextField):
-                        item.border_color = "#f59e0b" if is_focused else "#334155"
+                        item.border_color = (
+                            "#f59e0b" if is_focused else "#334155"
+                        )
                         item.focused_border_color = "#f59e0b"
                     elif isinstance(item, ft.ElevatedButton):
                         item.bgcolor = (
@@ -740,7 +764,9 @@ def main(page: ft.Page):
                 b.color = "white"
 
             for i, b in enumerate(right_buttons):
-                is_focused = state["zone"] == "right" and state["right_idx"] == i
+                is_focused = (
+                    state["zone"] == "right" and state["right_idx"] == i
+                )
                 b.bgcolor = "#f59e0b" if is_focused else "#1e293b"
                 b.color = "black" if is_focused else "white"
 
@@ -803,7 +829,11 @@ def main(page: ft.Page):
                     label = f"{real_num}. 📁 {cat_name}   ❯"
                 else:
                     k = item.get("kind") or state["kind"]
-                    icon = "📺" if k == "live" else ("🎬" if k == "vod" else "🎞")
+                    icon = (
+                        "📺"
+                        if k == "live"
+                        else ("🎬" if k == "vod" else "🎞")
+                    )
                     nm = item.get("name") or item.get("title") or "Pozycja"
                     action_fn = lambda it=item: on_stream_click(it)
                     label = f"{real_num}. {icon} {nm}"
@@ -844,9 +874,14 @@ def main(page: ft.Page):
             if not state["categories"].get(state["kind"]):
                 def _w():
                     try:
-                        cats = state["client"].get_categories(state["kind"]) or []
+                        cats = (
+                            state["client"].get_categories(state["kind"]) or []
+                        )
                         state["categories"][state["kind"]] = [
-                            {"category_id": "__ALL__", "category_name": "🔥 WSZYSTKIE"}
+                            {
+                                "category_id": "__ALL__",
+                                "category_name": "🔥 WSZYSTKIE",
+                            }
                         ] + cats
                         render_list()
                     except Exception:
@@ -897,10 +932,14 @@ def main(page: ft.Page):
                             first_s = sorted(eps_map.keys())[0]
                             first_ep = eps_map[first_s][0]
                             ext = (
-                                first_ep.get("container_extension", "mp4") or "mp4"
+                                first_ep.get("container_extension", "mp4")
+                                or "mp4"
                             )
                             url = state["client"].build_stream_url(
-                                "series", first_ep.get("id"), ext, item=first_ep
+                                "series",
+                                first_ep.get("id"),
+                                ext,
+                                item=first_ep,
                             )
                             play_stream_url(
                                 url,
@@ -987,10 +1026,16 @@ def main(page: ft.Page):
                     state["zone"] = "list"
                     state["list_idx"] = 0
                 elif state["zone"] == "list":
-                    if list_item_buttons and state["list_idx"] < len(list_item_buttons) - 1:
+                    if (
+                        list_item_buttons
+                        and state["list_idx"] < len(list_item_buttons) - 1
+                    ):
                         state["list_idx"] += 1
                 elif state["zone"] == "right":
-                    if right_buttons and state["right_idx"] < len(right_buttons) - 1:
+                    if (
+                        right_buttons
+                        and state["right_idx"] < len(right_buttons) - 1
+                    ):
                         state["right_idx"] += 1
 
             elif key == "Arrow Up":
@@ -1009,7 +1054,9 @@ def main(page: ft.Page):
                     if 0 <= state["tab_idx"] < len(kinds):
                         switch_tab(kinds[state["tab_idx"]], state["tab_idx"])
                 elif state["zone"] == "list":
-                    if list_item_actions and 0 <= state["list_idx"] < len(list_item_actions):
+                    if list_item_actions and 0 <= state["list_idx"] < len(
+                        list_item_actions
+                    ):
                         list_item_actions[state["list_idx"]]()
                 elif state["zone"] == "right":
                     idx = state["right_idx"]
@@ -1038,6 +1085,7 @@ def main(page: ft.Page):
 
         def do_login(_e=None):
             status_banner.value = "⏳ Łączenie z serwerem..."
+            status_banner.color = "#38bdf8"
             page.update()
 
             def _w():
@@ -1090,6 +1138,201 @@ def main(page: ft.Page):
             update_focus_styles()
             page.update()
             publish_status()
+
+        # =========================================================================
+        # ODBIORNIK CHMURY (NTFY.SH) - ODBIERANIE LIST I KOMEND Z PANELU WWW
+        # =========================================================================
+        def apply_profile(prof):
+            mode = prof.get("mode", "xtream")
+            name = prof.get("name", "Zdalna Lista")
+            state["active_profile_name"] = name
+            if mode == "m3u" or (
+                prof.get("m3u_url") and not prof.get("username")
+            ):
+                m3u_tf.value = prof.get("m3u_url") or prof.get("url") or ""
+                srv_tf.value = "http://"
+                usr_tf.value = ""
+                pas_tf.value = ""
+            else:
+                srv_tf.value = prof.get("server") or prof.get("host") or ""
+                usr_tf.value = prof.get("username") or prof.get("user") or ""
+                pas_tf.value = prof.get("password") or prof.get("pass") or ""
+                m3u_tf.value = ""
+            page.update()
+            do_login()
+
+        def handle_remote_command(cmd):
+            nonlocal profiles, device_name
+            c_type = cmd.get("type") or cmd.get("action") or cmd.get("cmd") or ""
+
+            # 1. Dodawanie nowej listy z formularza WWW
+            if c_type in (
+                "add_profile",
+                "send_list",
+                "new_list",
+                "add_list",
+                "push_list",
+            ) or ("server" in cmd and "username" in cmd) or ("m3u_url" in cmd):
+                prof_name = (
+                    cmd.get("name")
+                    or cmd.get("profile_name")
+                    or f"Lista {len(profiles) + 1}"
+                )
+                mode = cmd.get("mode") or (
+                    "m3u" if cmd.get("m3u_url") else "xtream"
+                )
+                new_prof = {
+                    "name": prof_name,
+                    "mode": mode,
+                    "server": cmd.get("server") or cmd.get("host") or "",
+                    "username": cmd.get("username") or cmd.get("user") or "",
+                    "password": cmd.get("password") or cmd.get("pass") or "",
+                    "m3u_url": cmd.get("m3u_url") or cmd.get("url") or "",
+                    "added_at": datetime.datetime.now().strftime(
+                        "%Y-%m-%d %H:%M"
+                    ),
+                }
+                profiles = [
+                    p for p in profiles if p.get("name") != prof_name
+                ]
+                profiles.insert(0, new_prof)
+                safe_storage_set(page, "profiles", profiles)
+
+                switch_now = cmd.get(
+                    "switch", cmd.get("auto_switch", cmd.get("activate", True))
+                )
+                if switch_now:
+                    apply_profile(new_prof)
+                else:
+                    publish_status()
+
+            # 2. Przełączanie na zapisaną listę
+            elif c_type in (
+                "switch_profile",
+                "select_profile",
+                "activate_profile",
+                "switch_list",
+                "switch",
+            ):
+                target = cmd.get("name") or cmd.get("profile_name")
+                for p in profiles:
+                    if p.get("name") == target:
+                        apply_profile(p)
+                        break
+
+            # 3. Usuwanie zapisanej listy
+            elif c_type in (
+                "delete_profile",
+                "remove_profile",
+                "del_profile",
+                "delete_list",
+                "delete",
+            ):
+                target = cmd.get("name") or cmd.get("profile_name")
+                profiles = [p for p in profiles if p.get("name") != target]
+                safe_storage_set(page, "profiles", profiles)
+                publish_status()
+
+            # 4. Zmiana nazwy odbiornika
+            elif c_type in ("set_name", "rename", "set_device_name", "save_name"):
+                nn = (
+                    cmd.get("device_name") or cmd.get("name") or ""
+                ).strip()
+                if nn:
+                    device_name = nn
+                    safe_storage_set(page, "device_name", nn)
+                    cur_id = safe_storage_get(page, "device_id", device_id)
+                    header_dev_lbl.value = f"📺 {nn} [{cur_id}]"
+                    page.update()
+                    publish_status()
+
+            # 5. Zdalny pilot sterowania
+            elif c_type in ("remote_control", "control", "player", "key", "command"):
+                act = cmd.get("command") or cmd.get("action") or cmd.get("key") or ""
+                _exec_player_action(act)
+            elif c_type in (
+                "play_pause",
+                "toggle",
+                "stop",
+                "mute",
+                "vol_up",
+                "vol_down",
+                "logout",
+                "refresh",
+                "ping",
+                "status",
+            ):
+                _exec_player_action(c_type)
+
+        def _exec_player_action(act):
+            if act in ("play_pause", "toggle", "play", "pause"):
+                toggle_play_pause()
+            elif act == "stop":
+                stop_playback()
+            elif act == "mute":
+                state["muted"] = not state["muted"]
+                publish_status()
+            elif act in ("vol_up", "volume_up"):
+                state["volume"] = min(100, state["volume"] + 10)
+                publish_status()
+            elif act in ("vol_down", "volume_down"):
+                state["volume"] = max(0, state["volume"] - 10)
+                publish_status()
+            elif act == "logout":
+                do_logout()
+            elif act in ("refresh", "ping", "status", "get_status"):
+                publish_status()
+
+        def cloud_listener():
+            nonlocal processed_ids
+            while True:
+                try:
+                    clean_id = re.sub(
+                        r"[^a-zA-Z0-9_-]",
+                        "",
+                        safe_storage_get(page, "device_id", device_id),
+                    )
+                    # Nasłuchujemy zarówno głównego kanału jak i kanału _cmd
+                    topics = f"iptv_v4_pro_{clean_id},iptv_v4_pro_{clean_id}_cmd"
+                    url = f"https://ntfy.sh/{topics}/json?poll=1&since=30m"
+                    r = session.get(url, timeout=10)
+                    if r.status_code == 200:
+                        for line in r.text.splitlines():
+                            if not line.strip():
+                                continue
+                            event = json.loads(line)
+                            msg_id = event.get("id")
+                            if not msg_id or msg_id in processed_ids:
+                                continue
+                            if event.get("event") != "message":
+                                continue
+
+                            processed_ids.add(msg_id)
+                            safe_storage_set(
+                                page,
+                                "processed_ids",
+                                list(processed_ids)[-200:],
+                            )
+
+                            raw_msg = event.get("message", "")
+                            try:
+                                payload = json.loads(raw_msg)
+                            except Exception:
+                                continue
+
+                            if (
+                                not isinstance(payload, dict)
+                                or payload.get("type") == "player_status"
+                            ):
+                                continue
+
+                            handle_remote_command(payload)
+                except Exception:
+                    pass
+                time.sleep(2.5)
+
+        threading.Thread(target=cloud_listener, daemon=True).start()
+        # =========================================================================
 
         login_view.content = ft.Column(
             [
@@ -1167,20 +1410,28 @@ def main(page: ft.Page):
         )
         page.add(login_view, dashboard_view)
         update_focus_styles()
+        publish_status()
 
     except Exception as e:
-        # Diagnostyka na wypadek jakiegokolwiek błędu na Android TV (zamiast czarnego ekranu)
         err_msg = traceback.format_exc()
         page.add(
             ft.Container(
-                content=ft.Column([
-                    ft.Text("⚠️ Błąd krytyczny podczas startu:", color="red", size=20, weight=ft.FontWeight.BOLD),
-                    ft.Text(str(e), color="yellow", size=16),
-                    ft.Text(err_msg, color="white", size=11),
-                ], scroll=ft.ScrollMode.ALWAYS),
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            "⚠️ Błąd krytyczny podczas startu:",
+                            color="red",
+                            size=20,
+                            weight=ft.FontWeight.BOLD,
+                        ),
+                        ft.Text(str(e), color="yellow", size=16),
+                        ft.Text(err_msg, color="white", size=11),
+                    ],
+                    scroll=ft.ScrollMode.ALWAYS,
+                ),
                 padding=20,
                 bgcolor="#1e293b",
-                expand=True
+                expand=True,
             )
         )
         page.update()
