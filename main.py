@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Client V4.6 PRO - ANDROID TV EDITION
+IPTV Client V4.7 PRO - ANDROID TV EDITION
 Poprawki:
-- Całkowita przebudowa nawigacji D-Pad (ft.Container zamiast ElevatedButton - brak konfliktów fokusu)
+- Całkowicie oczyszczone wcięcia (brak znaków U+00A0)
+- Nawigacja D-Pad oparta na ft.Container (brak konfliktów fokusu z systemem Android TV)
 - Wyraźne podświetlanie wybranej kategorii i kanału (żółta ramka + strzałka ▶ + kontrast)
-- Blokada podwójnego wywołania VLC (Anti-Double-Trigger) + czysty URL (naprawa błędu "kilku mediów")
+- Naprawione uruchamianie VLC: domyślny format vlc://serwer:port/... (bez podwójnego http://)
+  eliminuje błąd "Nie masz aplikacji" oraz błąd "Nie można odtworzyć kilku mediów"
 """
 
 import datetime
@@ -321,7 +323,7 @@ def safe_storage_set(page, key, val):
 
 def main(page: ft.Page):
     try:
-        page.title = "IPTV V4.6 PRO Android TV"
+        page.title = "IPTV V4.7 PRO Android TV"
         page.theme_mode = ft.ThemeMode.DARK
         page.bgcolor = "#0b0e17"
         page.padding = 10
@@ -335,6 +337,16 @@ def main(page: ft.Page):
         profiles = safe_storage_get(page, "profiles", [])
         processed_ids = set(safe_storage_get(page, "processed_ids", []))
         auto_vlc_saved = safe_storage_get(page, "auto_vlc", True)
+        saved_vlc_mode = safe_storage_get(page, "vlc_mode", "vlc_clean")
+
+        VLC_MODE_LABELS = {
+            "vlc_clean": "Tryb: vlc:// (Czysty)",
+            "intent": "Tryb: Android Intent",
+            "vlc_full": "Tryb: vlc://http://",
+            "http": "Tryb: Standard HTTP",
+        }
+        if saved_vlc_mode not in VLC_MODE_LABELS:
+            saved_vlc_mode = "vlc_clean"
 
         state = {
             "client": None,
@@ -355,7 +367,7 @@ def main(page: ft.Page):
             "volume": 100,
             "muted": False,
             "auto_vlc": bool(auto_vlc_saved),
-            "use_vlc_scheme": False,  # Domyślnie czysty HTTP (nie powoduje błędu wielu mediów)
+            "vlc_mode": saved_vlc_mode,
             "zone": "login",
             "tab_idx": 0,
             "list_idx": 0,
@@ -470,7 +482,7 @@ def main(page: ft.Page):
             text_align=ft.TextAlign.CENTER,
         )
         status_info_sub = ft.Text(
-            "Użyj strzałek ⬆️ ⬇️ na pilocie oraz przycisku OK.\nBrak podwójnego wywołania VLC (tryb pojedynczego strumienia).",
+            "Użyj strzałek ⬆️ ⬇️ na pilocie oraz przycisku OK.\nDomyślny tryb vlc:// (Czysty) otwiera bezpośrednio VLC bez błędu wielu mediów.",
             size=13,
             color="#94a3b8",
             text_align=ft.TextAlign.CENTER,
@@ -605,34 +617,45 @@ def main(page: ft.Page):
         ]
 
         # =====================================================================
-        # BEZPIECZNE URUCHAMIANIE VLC (BRAK BŁĘDU "KILKU MEDIÓW")
+        # BEZPIECZNE URUCHAMIANIE VLC (4 TRYBY DO WYBORU)
         # =====================================================================
         def launch_vlc_intent(raw_url: str, title: str = ""):
             if not raw_url:
                 return
 
-            # Blokada przed podwójnym uruchomieniem tego samego linku w ciągu 1.8 sekundy
             now = time.time()
             if now - state["last_vlc_ts"] < 1.8:
                 return
             state["last_vlc_ts"] = now
 
-            # Oczyszczenie adresu URL z ewentualnych znaków nowej linii lub spacji
             clean_u = raw_url.strip().splitlines()[0].strip()
+            mode = state.get("vlc_mode", "vlc_clean")
+            no_proto = re.sub(r"^https?://", "", clean_u, flags=re.IGNORECASE)
+            scheme = "https" if clean_u.lower().startswith("https://") else "http"
 
-            now_playing_txt.value = f"🚀 Uruchamianie: {title or state['now_playing']}"
+            if mode == "vlc_clean":
+                # vlc://serwer:port/live/... (Brak podwójnego http:// -> brak błędu wielu mediów!)
+                target_url = f"vlc://{no_proto}"
+            elif mode == "intent":
+                # Natywny Android Intent wskazujący pakiet org.videolan.vlc
+                target_url = (
+                    f"intent://{no_proto}#Intent;"
+                    f"scheme={scheme};"
+                    f"type=video/*;"
+                    f"package=org.videolan.vlc;"
+                    f"end"
+                )
+            elif mode == "vlc_full":
+                target_url = clean_u if clean_u.startswith("vlc://") else f"vlc://{clean_u}"
+            else:
+                target_url = clean_u
+
+            now_playing_txt.value = f"🚀 VLC ({mode}): {title or state['now_playing']}"
             status_info_title.value = f"▶ {title or state['now_playing']}"
-            status_info_sub.value = f"Strumień przekazany do zewnętrznego odtwarzacza.\nURL: {clean_u[:65]}..."
+            status_info_sub.value = f"Przekazano do VLC ({VLC_MODE_LABELS.get(mode, mode)}):\n{target_url[:72]}..."
             page.update()
 
             try:
-                if state["use_vlc_scheme"]:
-                    target_url = clean_u if clean_u.startswith("vlc://") else f"vlc://{clean_u}"
-                else:
-                    # Czysty link HTTP/HTTPS – Android TV otwiera go w domyślnym odtwarzaczu (VLC)
-                    # bez psucia składni adresu i bez błędu "kilku mediów"
-                    target_url = clean_u
-
                 page.launch_url(target_url)
             except Exception as ex:
                 now_playing_txt.value = f"❌ Błąd uruchomienia: {ex}"
@@ -651,11 +674,12 @@ def main(page: ft.Page):
             update_focus_styles()
 
         def toggle_vlc_scheme(_e=None):
-            state["use_vlc_scheme"] = not state["use_vlc_scheme"]
-            set_tv_button_text(
-                btn_scheme_vlc,
-                f"Tryb linku: {'vlc://' if state['use_vlc_scheme'] else 'Standard HTTP'}",
-            )
+            modes = ["vlc_clean", "intent", "vlc_full", "http"]
+            cur = state.get("vlc_mode", "vlc_clean")
+            nxt = modes[(modes.index(cur) + 1) % len(modes)] if cur in modes else "vlc_clean"
+            state["vlc_mode"] = nxt
+            safe_storage_set(page, "vlc_mode", nxt)
+            set_tv_button_text(btn_scheme_vlc, VLC_MODE_LABELS[nxt])
             update_focus_styles()
 
         def play_stream_url(url, title):
@@ -721,7 +745,7 @@ def main(page: ft.Page):
             height=42,
         )
         btn_scheme_vlc = make_tv_button(
-            "Tryb linku: Standard HTTP",
+            VLC_MODE_LABELS[state["vlc_mode"]],
             toggle_vlc_scheme,
             height=42,
         )
@@ -1477,7 +1501,7 @@ def main(page: ft.Page):
                             ft.Row(
                                 [
                                     ft.Text(
-                                        "▶ IPTV V4.6 PRO ANDROID TV",
+                                        "▶ IPTV V4.7 PRO ANDROID TV",
                                         size=20,
                                         weight=ft.FontWeight.BOLD,
                                     ),
