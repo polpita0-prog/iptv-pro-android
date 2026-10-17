@@ -1,12 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 IPTV Client V6.5 PRO - VIVO TV EDITION (Android TV)
-Pełny pakiet ulepszeń:
-1. AUTO-SCROLL PILOTA + PEŁNE STRONICOWANIE (obsługa list powyżej 50 pozycji).
-2. INTELIGENTNY PRZYCISK WSTECZ: Odcinki -> Strumienie -> Kategorie -> Pulpit Vivo.
-3. LIVE PREVIEW + EPG (Base64) + TMDB: Automatyczne okładki i program TV po najechaniu kursorem.
-4. DZIAŁAJĄCY CATCH UP (ARCHIWUM TV) oraz filtr "🇵🇱 Tylko Polskie" wyłącznie dla nazw kategorii.
-5. PRAWDZIWA DATA WAŻNOŚCI KONTA w stopce Vivo oraz przełącznik 4 trybów VLC (w tym Android Intent).
+Pełny pakiet ulepszeń z poprawioną kompatybilnością ikon dla systemów Android.
 """
 
 import base64
@@ -1302,7 +1297,7 @@ def main(page: ft.Page):
             padding=20,
         )
 
-        # Główny interfejs Vivo Dashboard
+        # Główny interfejs Vivo Dashboard (Zastąpienie ft.Icons stringami)
         dash_view = ft.Container(
             content=ft.Column(
                 [
@@ -1312,8 +1307,8 @@ def main(page: ft.Page):
                             ft.Column([clock_txt, date_txt], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                             ft.Row(
                                 [
-                                    ft.IconButton(ft.Icons.SEARCH, icon_color="#34d399", on_click=open_search_dialog),
-                                    ft.IconButton(ft.Icons.SETTINGS, icon_color="#34d399", on_click=open_remote_settings_dlg),
+                                    ft.IconButton(icon="search", icon_color="#34d399", on_click=open_search_dialog),
+                                    ft.IconButton(icon="settings", icon_color="#34d399", on_click=open_remote_settings_dlg),
                                 ],
                                 spacing=4,
                             ),
@@ -1333,8 +1328,8 @@ def main(page: ft.Page):
                             ft.Column([footer_playlist_txt, footer_expire_txt], spacing=2),
                             ft.Row(
                                 [
-                                    ft.IconButton(ft.Icons.REFRESH, icon_color="#34d399", on_click=refresh_current_list),
-                                    ft.IconButton(ft.Icons.POWER_SETTINGS_NEW, icon_color="#ef4444", on_click=close_app_cleanly),
+                                    ft.IconButton(icon="refresh", icon_color="#34d399", on_click=refresh_current_list),
+                                    ft.IconButton(icon="power_settings_new", icon_color="#ef4444", on_click=close_app_cleanly),
                                 ],
                                 spacing=8,
                             ),
@@ -1482,7 +1477,6 @@ def main(page: ft.Page):
             kind_lbl = {"live": "TV NA ŻYWO", "vod": "FILMY VOD", "series": "SERIALE"}[state["kind"]]
             if v_mode == "categories":
                 raw = list(state["categories"].get(state["kind"], []))
-                # Filtr "Tylko Polskie" działa wyłącznie na nazwy kategorii
                 if state["only_pl"]:
                     raw = [
                         c for c in raw
@@ -1514,7 +1508,6 @@ def main(page: ft.Page):
             end = min(start + PAGE_SIZE, total_items)
             slice_items = raw[start:end]
 
-            # Przyciski powrotu na górze listy
             if v_mode == "episodes":
                 b_back = make_tv_button("↩ WRÓĆ DO SERIALI", back_to_streams, key_str=f"item_{btn_idx}", height=42)
                 list_item_buttons.append(b_back)
@@ -1528,7 +1521,6 @@ def main(page: ft.Page):
                 list_view.controls.append(b_back)
                 btn_idx += 1
 
-            # Przycisk poprzedniej strony
             if start > 0:
                 prev_fn = lambda: change_page(-PAGE_SIZE, jump_to_end=True)
                 b_prev = make_tv_button(f"⬆️ POPRZEDNIA STRONA ({start - PAGE_SIZE + 1}-{start})", prev_fn, key_str=f"item_{btn_idx}", height=42)
@@ -1565,7 +1557,6 @@ def main(page: ft.Page):
 
             last_media_btn_idx = btn_idx - 1
 
-            # Przycisk następnej strony
             if end < total_items:
                 next_fn = lambda: change_page(PAGE_SIZE, jump_to_end=False)
                 b_next = make_tv_button(f"⬇️ NASTĘPNA STRONA ({end + 1}-{min(end + PAGE_SIZE, total_items)} z {total_items})", next_fn, key_str=f"item_{btn_idx}", height=42)
