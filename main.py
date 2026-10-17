@@ -523,33 +523,53 @@ def main(page: ft.Page):
         init_storage_cache()
 
         def cache_get(key, default=None):
-            val = storage_cache.get(key)
+            with storage_lock:
+                val = storage_cache.get(key)
             return val if val is not None else default
 
-        def cache_set(key, val):
-            storage_cache[key] = val
+        def _flush_pending_storage():
+            """Zapisuje oczekujące ustawienia; błędy nie usuwają danych z kolejki."""
             with storage_lock:
+                items_to_save = list(pending_writes.items())
+                pending_writes.clear()
+            failed = {}
+            for key, value in items_to_save:
+                try:
+                    page.client_storage.set(key, value)
+                except Exception:
+                    failed[key] = value
+            if failed:
+                with storage_lock:
+                    # Nie nadpisuj nowszej wartości, która mogła pojawić się w międzyczasie.
+                    for key, value in failed.items():
+                        pending_writes.setdefault(key, value)
+            return not failed
+
+        def cache_set(key, val):
+            with storage_lock:
+                storage_cache[key] = val
                 pending_writes[key] = val
                 if write_timer_active["running"]:
                     return
                 write_timer_active["running"] = True
 
             def _flush_writer():
+                # Krótkie grupowanie zapisów ogranicza liczbę operacji na pamięci Androida.
                 time.sleep(0.25)
-                if stop_event.is_set():
-                    return
-                with storage_lock:
-                    items_to_save = list(pending_writes.items())
-                    pending_writes.clear()
-                    write_timer_active["running"] = False
-
-                for k_save, v_save in items_to_save:
-                    if stop_event.is_set():
-                        break
-                    try:
-                        page.client_storage.set(k_save, v_save)
-                    except Exception:
-                        pass
+                success = False
+                try:
+                    success = _flush_pending_storage()
+                finally:
+                    with storage_lock:
+                        write_timer_active["running"] = False
+                        has_pending = bool(pending_writes)
+                    # Kolejny przebieg tylko po udanym zapisie. Przy błędzie trwałym
+                    # nie zapętlamy wątku; kolejna zmiana lub zamknięcie ponowi zapis.
+                    if success and has_pending and not stop_event.is_set():
+                        with storage_lock:
+                            if not write_timer_active["running"]:
+                                write_timer_active["running"] = True
+                                threading.Thread(target=_flush_writer, daemon=True).start()
 
             threading.Thread(target=_flush_writer, daemon=True).start()
 
@@ -562,6 +582,11 @@ def main(page: ft.Page):
                 pass
 
         def close_app_cleanly(_e=None):
+            # Najpierw spróbuj zapisać ustawienia, aby zamknięcie nie gubiło ostatnich zmian.
+            try:
+                _flush_pending_storage()
+            except Exception:
+                pass
             stop_event.set()
             try:
                 page.window_close()
@@ -575,6 +600,10 @@ def main(page: ft.Page):
         def on_lifecycle_change(e: ft.AppLifecycleStateChangeEvent):
             st_str = str(e.data).lower()
             if "detach" in st_str:
+                try:
+                    _flush_pending_storage()
+                except Exception:
+                    pass
                 stop_event.set()
             elif "pause" in st_str or "inactive" in st_str or "hidden" in st_str:
                 app_state["paused_in_bg"] = True
@@ -593,7 +622,7 @@ def main(page: ft.Page):
 
         device_name = cache_get("device_name", "Android TV Box")
         profiles = list(cache_get("profiles", []))
-        processed_ids = set(cache_get("processed_ids", []))
+        processed_ids = list(dict.fromkeys(cache_get("processed_ids", [])))[-200:]
         auto_vlc_saved = cache_get("auto_vlc", True)
         auto_login_saved = cache_get("auto_login", True)
         only_pl_saved = cache_get("only_pl", False)
@@ -1817,9 +1846,9 @@ def main(page: ft.Page):
                         if str(c.get("category_id", "")) in ("__ALL__", "__RECENT__")
                         or is_polish_text(c.get("category_name", ""))
                     ]
-                    # Jeśli lista nie ma oznaczonych tagiem PL kategorii, nie zostawiaj pustej listy
-                    if len(filtered_cats) > (2 if state["kind"] in ("vod", "series") else 1):
-                        raw = filtered_cats
+                    # Filtr ma być ścisły: gdy nie znaleziono polskich kategorii,
+                    # pozostają wyłącznie pozycje specjalne (np. Wszystkie / Ostatnio dodane).
+                    raw = filtered_cats
                 hdr_base = f"📂 {kind_lbl}"
             elif v_mode == "episodes":
                 raw = list(state["episodes"])
@@ -1841,16 +1870,14 @@ def main(page: ft.Page):
                 # Gdy włączony jest filtr 'Tylko Polskie', a jesteśmy w kategorii ogólnej (Wszystkie / Ostatnio dodane)
                 # lub zagranicznej, filtrujemy pojedyncze pozycje do wyłącznie polskich.
                 if state["only_pl"] and not cat_is_pl:
-                    only_pl_streams = [it for it in raw if is_polish_item(it, pl_ids)]
-                    if only_pl_streams:
-                        raw = only_pl_streams
+                    raw = [it for it in raw if is_polish_item(it, pl_ids)]
                 hdr_base = f"📺 {cat_nm}{only_pl_tag}"
 
             q = state.get("search_query", "").strip().lower()
             if q:
                 raw = [
                     it for it in raw
-                    if q in (
+                    if q in str(
                         it.get("name")
                         or it.get("title")
                         or it.get("display_title")
@@ -2643,8 +2670,10 @@ def main(page: ft.Page):
                                 if event.get("event") != "message":
                                     continue
 
-                                processed_ids.add(msg_id)
-                                cache_set("processed_ids", list(processed_ids)[-200:])
+                                processed_ids.append(msg_id)
+                                # Ograniczona lista zachowuje kolejność odebrania i nie rośnie bez końca.
+                                processed_ids = processed_ids[-200:]
+                                cache_set("processed_ids", processed_ids)
 
                                 raw_msg = event.get("message", "")
                                 try:
