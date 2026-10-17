@@ -1,23 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Client V5.5 PRO - ANDROID TV EDITION
-Nowości w V5.5:
-1. PRZEŁĄCZNIK "🇵🇱 Tylko Polskie: WŁ./WYŁ." (ZAPISYWANY W PAMIĘCI APK):
-   - Gdy WŁ.: całkowicie ukrywa zagraniczne kategorie na liście kategorii oraz zagraniczne
-     kanały/filmy/seriale na listach zbiorczych (Wszystkie / Ostatnio dodane).
-   - Gdy WYŁ.: pokazuje pełną listę, ale polskie kategorie i kanały nadal trzyma na samej górze.
-2. INTELIGENTNE ROZPOZNAWANIE POLSKICH KATEGORII:
-   - Jeśli użytkownik otworzy polską kategorię (np. "PL: Kino Akcji"), wyświetlane są wszystkie
-     filmy należące do tej kategorii, nawet gdy pojedynczy film nie ma tagu "PL" w tytule.
-3. FILMY I SERIALE - OSTATNIO DODANE NA GÓRZE + PRZYCISK "🔄 ODŚWIEŻ NOWOŚCI".
+IPTV Client V6.5 PRO - VIVO TV EDITION (Android TV)
+Pełny pakiet ulepszeń:
+1. AUTO-SCROLL PILOTA + PEŁNE STRONICOWANIE (obsługa list powyżej 50 pozycji).
+2. INTELIGENTNY PRZYCISK WSTECZ: Odcinki -> Strumienie -> Kategorie -> Pulpit Vivo.
+3. LIVE PREVIEW + EPG (Base64) + TMDB: Automatyczne okładki i program TV po najechaniu kursorem.
+4. DZIAŁAJĄCY CATCH UP (ARCHIWUM TV) oraz filtr "🇵🇱 Tylko Polskie" wyłącznie dla nazw kategorii.
+5. PRAWDZIWA DATA WAŻNOŚCI KONTA w stopce Vivo oraz przełącznik 4 trybów VLC (w tym Android Intent).
 """
 
+import base64
 import datetime
-import json
 import re
 import threading
 import time
-import traceback
 from urllib.parse import parse_qs, urlparse
 import uuid
 
@@ -34,11 +30,10 @@ DEFAULT_HEADERS = {
     "Accept": "*/*",
 }
 
-# Wzorce rozpoznające polskie kategorie, kanały, filmy i seriale
 PL_REGEX = re.compile(
     r"(?:^|[\s\|\[\(\-_:•/])(PL|POL|POLAND|POLSKA|POLSKIE|POLISH|LEKTOR|DUBBING|NAPISY[\s_]*PL|PL[\s_]*SUB|VIP[\s_]*PL)(?:$|[\s\|\]\)\-_:•/])"
     r"|[ąćęłńóśźżĄĆĘŁŃÓŚŹŻ]"
-    r"|\b(tvp|polsat|tvn|canal\+|c\+|ale\s*kino|kino\s*polska|planete\+|domo\+|kuchnia\+|teletoon\+|minimini\+|ttv|puls|fokus\s*tv|eska|polo\s*tv|trwam|republika|wpolsce|wydarzenia\s*24|stopklatka|zoom\s*tv|wp\s*tv|nowa\s*tv|metro\s*tv|eleven\s*sports|polsat\s*sport|motowizja|stars\s*tv|kino\s*tv|gametoon|active\s*family|romance\s*tv|13\s*ulica|sci\s*fi|paramount|comedy\s*central|national\s*geographic|discovery|animal\s*planet|tlc|id\s*investigation|hbo|cinemax|filmbox|axn|fox|epic\s*drama|bbc\s*brit|bbc\s*earth|bbc\s*first|bbc\s*cbbc|bbc\s*lifestyle|viasat|history|crime\s*investigation|sundance|red\s*carpet|antena\s*hd|tv\s*okazje|super\s*polsat|tv4|tv6|polsat\s*news|tvn24|tvp\s*info|biznes24|news24|pogoda24|4fun|vox\s*music|disco\s*polo|power\s*tv|nuta\s*tv|mixtape|hip\s*hop\s*tv)\b",
+    r"|\b(tvp|polsat|tvn|canal\+|c\+|ale\s*kino|kino\s*polska|planete\+|domo\+|kuchnia\+|teletoon\+|minimini\+|ttv|puls|fokus\s*tv|eska|polo\s*tv|trwam|republika|wpolsce|wydarzenia\s*24|stopklatka|zoom\s*tv|wp\s*tv|nowa\s*tv|metro\s*tv|eleven\s*sports|polsat\s*sport|motowizja|stars\s*tv|kino\s*tv|gametoon|active\s*family|romance\s*tv|13\s*ulica|sci\s*fi|paramount|comedy\s*central|national\s*geographic|discovery|animal\s*planet|tlc|id\s*investigation|hbo|cinemax|filmbox|axn|fox|epic\s*drama|bbc\s*brit|bbc\s*earth|bbc\s*first|bbc\s*lifestyle|viasat|history|crime\s*investigation|sundance|red\s*carpet|antena\s*hd|tv\s*okazje|super\s*polsat|tv4|tv6|polsat\s*news|tvn24|tvp\s*info|biznes24|news24|pogoda24|4fun|vox\s*music|disco\s*polo|power\s*tv|nuta\s*tv|mixtape|hip\s*hop\s*tv)\b",
     re.IGNORECASE,
 )
 
@@ -71,6 +66,15 @@ def parse_int_safe(val, default=0) -> int:
     except Exception:
         m = re.search(r"(\d+)$", str(val))
         return int(m.group(1)) if m else default
+
+
+def decode_b64_safe(val: str) -> str:
+    if not val:
+        return ""
+    try:
+        return base64.b64decode(val).decode("utf-8", errors="ignore").strip()
+    except Exception:
+        return str(val).strip()
 
 
 def get_added_timestamp(item: dict) -> int:
@@ -171,6 +175,7 @@ def clean_media_title(title):
 
 
 tmdb_memory_cache = {}
+epg_memory_cache = {}
 
 
 def fetch_tmdb_details(title):
@@ -260,9 +265,13 @@ class XtreamClient:
             "series": "get_series",
         }[kind]
         params = {"action": action}
-        if category_id and category_id not in ("__ALL__", "__RECENT__"):
+        if category_id and category_id not in ("__ALL__", "__RECENT__", "__CATCHUP__"):
             params["category_id"] = category_id
         raw_streams = self._api(params, timeout=24) or []
+        if category_id == "__CATCHUP__":
+            raw_streams = [
+                s for s in raw_streams if parse_int_safe(s.get("tv_archive"), 0) == 1
+            ]
         return sort_streams_smart(
             raw_streams,
             kind,
@@ -272,6 +281,32 @@ class XtreamClient:
 
     def get_series_info(self, series_id):
         return self._api({"action": "get_series_info", "series_id": series_id})
+
+    def get_short_epg(self, stream_id):
+        if not stream_id:
+            return []
+        now_ts = time.time()
+        cached = epg_memory_cache.get(str(stream_id))
+        if cached and (now_ts - cached[0] < 120):
+            return cached[1]
+        try:
+            data = self._api(
+                {"action": "get_short_epg", "stream_id": stream_id, "limit": 2},
+                timeout=5,
+            )
+            listings = data.get("epg_listings", []) if isinstance(data, dict) else []
+            parsed = []
+            for el in listings[:2]:
+                title = decode_b64_safe(el.get("title", ""))
+                desc = decode_b64_safe(el.get("description", ""))
+                start_t = (el.get("start") or "")[11:16]
+                end_t = (el.get("end") or "")[11:16]
+                if title:
+                    parsed.append(f"🕒 {start_t}-{end_t} | {title}\n{desc}".strip())
+            epg_memory_cache[str(stream_id)] = (now_ts, parsed)
+            return parsed
+        except Exception:
+            return []
 
     def build_stream_url(self, kind, stream_id, container_ext="ts", item=None):
         if item and item.get("direct_url"):
@@ -291,6 +326,7 @@ class M3UClient:
         self.source = source.strip()
         self.server = "Lista M3U"
         self.username = "M3U Playlist"
+        self.user_info = {"auth": 1, "exp_date": None}
         self.session = make_session()
         self.categories = {"live": [], "vod": [], "series": []}
         self.streams_by_cat = {"live": {}, "vod": {}, "series": {}}
@@ -308,7 +344,7 @@ class M3UClient:
         r.raise_for_status()
         r.encoding = r.apparent_encoding or "utf-8"
         self._parse_m3u(r.text)
-        return {"auth": 1, "exp_date": "0"}
+        return self.user_info
 
     def _classify_entry(self, url, group, name):
         lower_url = url.lower()
@@ -357,6 +393,7 @@ class M3UClient:
             )
             group = (attrs.get("group-title") or "Bez kategorii").strip()
             logo = attrs.get("tvg-logo") or ""
+            catchup = 1 if (attrs.get("catchup") or attrs.get("tvg-rec")) else 0
             kind, ep_match = self._classify_entry(url, group, name)
 
             if group not in cat_sets[kind]:
@@ -385,6 +422,7 @@ class M3UClient:
                     "group": group,
                     "stream_icon": logo,
                     "direct_url": url,
+                    "tv_archive": catchup,
                     "kind": kind,
                 })
             else:
@@ -429,10 +467,12 @@ class M3UClient:
     def get_streams(self, kind, category_id=None):
         cat_map = self.streams_by_cat.get(kind, {})
         pl_ids = self.pl_cat_ids.get(kind, set())
-        if not category_id or category_id in ("__ALL__", "__RECENT__"):
+        if not category_id or category_id in ("__ALL__", "__RECENT__", "__CATCHUP__"):
             res = []
             for v in cat_map.values():
                 res.extend(v)
+            if category_id == "__CATCHUP__":
+                res = [s for s in res if parse_int_safe(s.get("tv_archive"), 0) == 1]
             return sort_streams_smart(
                 res,
                 kind,
@@ -444,6 +484,9 @@ class M3UClient:
 
     def get_series_info(self, series_id):
         return self.series_map.get(series_id, {"episodes": {}})
+
+    def get_short_epg(self, stream_id):
+        return []
 
     def build_stream_url(self, kind, stream_id, container_ext="ts", item=None):
         if item and item.get("direct_url"):
@@ -471,6 +514,13 @@ def build_special_top_categories(kind: str, raw_cats: list) -> list:
             "category_name": "🔥 WSZYSTKIE (🇵🇱 Polskie na górze)",
         }
     ]
+    if kind == "live":
+        top.append(
+            {
+                "category_id": "__CATCHUP__",
+                "category_name": "⏱ KANAŁY Z ARCHIWUM (CATCH UP)",
+            }
+        )
     if kind in ("vod", "series"):
         top.append(
             {
@@ -483,13 +533,13 @@ def build_special_top_categories(kind: str, raw_cats: list) -> list:
 
 def main(page: ft.Page):
     try:
-        page.title = "IPTV V5.5 PRO Android TV"
+        page.title = "IPTV V6.5 PRO - VIVO TV EDITION"
         page.theme_mode = ft.ThemeMode.DARK
-        page.bgcolor = "#0b0e17"
-        page.padding = 10
+        page.bgcolor = "#0b1f15"
+        page.padding = 0
 
         stop_event = threading.Event()
-        app_state = {"dialog_open": False, "paused_in_bg": False}
+        app_state = {"dialog_open": False, "preview_seq": 0}
         storage_lock = threading.Lock()
         storage_cache = {}
         pending_writes = {}
@@ -500,7 +550,6 @@ def main(page: ft.Page):
                 "device_id": "",
                 "device_name": "Android TV Box",
                 "profiles": [],
-                "processed_ids": [],
                 "auto_vlc": True,
                 "auto_login": True,
                 "only_pl": False,
@@ -523,53 +572,33 @@ def main(page: ft.Page):
         init_storage_cache()
 
         def cache_get(key, default=None):
-            with storage_lock:
-                val = storage_cache.get(key)
+            val = storage_cache.get(key)
             return val if val is not None else default
 
-        def _flush_pending_storage():
-            """Zapisuje oczekujące ustawienia; błędy nie usuwają danych z kolejki."""
-            with storage_lock:
-                items_to_save = list(pending_writes.items())
-                pending_writes.clear()
-            failed = {}
-            for key, value in items_to_save:
-                try:
-                    page.client_storage.set(key, value)
-                except Exception:
-                    failed[key] = value
-            if failed:
-                with storage_lock:
-                    # Nie nadpisuj nowszej wartości, która mogła pojawić się w międzyczasie.
-                    for key, value in failed.items():
-                        pending_writes.setdefault(key, value)
-            return not failed
-
         def cache_set(key, val):
+            storage_cache[key] = val
             with storage_lock:
-                storage_cache[key] = val
                 pending_writes[key] = val
                 if write_timer_active["running"]:
                     return
                 write_timer_active["running"] = True
 
             def _flush_writer():
-                # Krótkie grupowanie zapisów ogranicza liczbę operacji na pamięci Androida.
                 time.sleep(0.25)
-                success = False
-                try:
-                    success = _flush_pending_storage()
-                finally:
-                    with storage_lock:
-                        write_timer_active["running"] = False
-                        has_pending = bool(pending_writes)
-                    # Kolejny przebieg tylko po udanym zapisie. Przy błędzie trwałym
-                    # nie zapętlamy wątku; kolejna zmiana lub zamknięcie ponowi zapis.
-                    if success and has_pending and not stop_event.is_set():
-                        with storage_lock:
-                            if not write_timer_active["running"]:
-                                write_timer_active["running"] = True
-                                threading.Thread(target=_flush_writer, daemon=True).start()
+                if stop_event.is_set():
+                    return
+                with storage_lock:
+                    items_to_save = list(pending_writes.items())
+                    pending_writes.clear()
+                    write_timer_active["running"] = False
+
+                for k_save, v_save in items_to_save:
+                    if stop_event.is_set():
+                        break
+                    try:
+                        page.client_storage.set(k_save, v_save)
+                    except Exception:
+                        pass
 
             threading.Thread(target=_flush_writer, daemon=True).start()
 
@@ -582,11 +611,6 @@ def main(page: ft.Page):
                 pass
 
         def close_app_cleanly(_e=None):
-            # Najpierw spróbuj zapisać ustawienia, aby zamknięcie nie gubiło ostatnich zmian.
-            try:
-                _flush_pending_storage()
-            except Exception:
-                pass
             stop_event.set()
             try:
                 page.window_close()
@@ -597,24 +621,6 @@ def main(page: ft.Page):
             except Exception:
                 pass
 
-        def on_lifecycle_change(e: ft.AppLifecycleStateChangeEvent):
-            st_str = str(e.data).lower()
-            if "detach" in st_str:
-                try:
-                    _flush_pending_storage()
-                except Exception:
-                    pass
-                stop_event.set()
-            elif "pause" in st_str or "inactive" in st_str or "hidden" in st_str:
-                app_state["paused_in_bg"] = True
-            elif "resume" in st_str:
-                app_state["paused_in_bg"] = False
-                safe_ui_update()
-
-        page.on_app_lifecycle_state_change = on_lifecycle_change
-        page.on_disconnect = lambda _: stop_event.set()
-        page.on_close = lambda _: stop_event.set()
-
         device_id = cache_get("device_id")
         if not device_id:
             device_id = f"android-{uuid.uuid4().hex[:6]}"
@@ -622,18 +628,18 @@ def main(page: ft.Page):
 
         device_name = cache_get("device_name", "Android TV Box")
         profiles = list(cache_get("profiles", []))
-        processed_ids = list(dict.fromkeys(cache_get("processed_ids", [])))[-200:]
         auto_vlc_saved = cache_get("auto_vlc", True)
         auto_login_saved = cache_get("auto_login", True)
         only_pl_saved = cache_get("only_pl", False)
         saved_vlc_mode = cache_get("vlc_mode", "vlc_clean")
         favorites_items = list(cache_get("favorites_v2", []))
 
+        VLC_MODE_ORDER = ["vlc_clean", "intent", "vlc_full", "http"]
         VLC_MODE_LABELS = {
-            "vlc_clean": "Tryb: vlc:// (Czysty)",
-            "intent": "Tryb: Android Intent",
-            "vlc_full": "Tryb: vlc://http://",
-            "http": "Tryb: Standard HTTP",
+            "vlc_clean": "🔧 VLC: vlc://",
+            "intent": "🔧 VLC: Intent",
+            "vlc_full": "🔧 VLC: vlc://http",
+            "http": "🔧 VLC: HTTP",
         }
         if saved_vlc_mode not in VLC_MODE_LABELS:
             saved_vlc_mode = "vlc_clean"
@@ -714,13 +720,15 @@ def main(page: ft.Page):
             "kind": "live",
             "in_fav": False,
             "in_profiles": False,
-            "view_mode": "categories",  # categories | streams | episodes | profiles
+            "in_dashboard": True,
+            "view_mode": "dashboard",
             "active_cat": None,
             "active_series_id": "",
             "active_series_title": "",
             "active_profile_name": cache_get("active_profile_name", ""),
+            "exp_date_str": "Unlimited",
             "categories": {"live": [], "vod": [], "series": []},
-            "streams_cache": {},  # (kind, cat_id) -> list
+            "streams_cache": {},
             "streams": [],
             "episodes": [],
             "filtered": [],
@@ -730,23 +738,16 @@ def main(page: ft.Page):
             "playing_url": "",
             "current_item": None,
             "is_playing": False,
-            "paused": False,
-            "volume": 100,
-            "muted": False,
             "auto_vlc": bool(auto_vlc_saved),
             "auto_login": bool(auto_login_saved),
             "is_logging_in": False,
             "vlc_mode": saved_vlc_mode,
-            "zone": "login",
-            "tab_idx": 0,
+            "zone": "dashboard",
+            "dash_idx": 0,
             "list_idx": 0,
             "right_idx": 0,
-            "login_idx": 5 if has_saved_credentials() else 1,
+            "login_idx": 4 if has_saved_credentials() else 0,
             "page_offset": 0,
-            "last_ok_ts": 0.0,
-            "last_vlc_ts": 0.0,
-            "prev_zone": None,
-            "prev_list_idx": -1,
         }
 
         PAGE_SIZE = 50
@@ -757,114 +758,7 @@ def main(page: ft.Page):
                 return cl.pl_cat_ids.get(state["kind"], set())
             return set()
 
-        # =====================================================================
-        # PRZEŁĄCZNIK: 🇵🇱 TYLKO POLSKIE (UKRYWANIE ZAGRANICZNYCH KANAŁÓW I GRUP)
-        # =====================================================================
-        def toggle_only_pl(_e=None):
-            state["only_pl"] = not state["only_pl"]
-            cache_set("only_pl", state["only_pl"])
-            set_tv_button_text(
-                btn_only_pl,
-                f"🇵🇱 Tylko Polskie: {'WŁ.' if state['only_pl'] else 'WYŁ.'}",
-            )
-            state["page_offset"] = 0
-            state["list_idx"] = 0
-            now_playing_txt.value = (
-                "🇵🇱 Filtr 'Tylko Polskie' WŁĄCZONY — zagraniczne kategorie i kanały zostały ukryte."
-                if state["only_pl"]
-                else "🌍 Filtr 'Tylko Polskie' WYŁĄCZONY — widoczne wszystkie kanały (Polskie na górze)."
-            )
-            render_list()
-
-        # =====================================================================
-        # SZYBKA OBSŁUGA ULUBIONYCH
-        # =====================================================================
-        def is_favorite(item):
-            uid = get_item_unique_id(item)
-            if not uid:
-                return False
-            return any(get_item_unique_id(f) == uid for f in favorites_items)
-
-        def toggle_favorite(_e=None):
-            nonlocal favorites_items
-            cur_item = state.get("current_item")
-            if not cur_item:
-                now_playing_txt.value = "⚠️ Wybierz najpierw kanał lub film, aby dodać do ulubionych."
-                safe_ui_update()
-                return
-
-            uid = get_item_unique_id(cur_item)
-            if not uid:
-                return
-
-            if is_favorite(cur_item):
-                favorites_items = [f for f in favorites_items if get_item_unique_id(f) != uid]
-                now_playing_txt.value = f"⭐ Usunięto z ulubionych: {cur_item.get('name') or cur_item.get('title')}"
-            else:
-                item_copy = dict(cur_item)
-                item_copy["kind"] = cur_item.get("kind") or state["kind"]
-                favorites_items.insert(0, item_copy)
-                now_playing_txt.value = f"⭐ Dodano do ulubionych: {cur_item.get('name') or cur_item.get('title')}"
-
-            cache_set("favorites_v2", favorites_items)
-            set_tv_button_text(
-                btn_fav_toggle,
-                "⭐ Usuń z ulubionych" if is_favorite(cur_item) else "⭐ Dodaj do ulubionych",
-            )
-            if state["in_fav"]:
-                render_list()
-            else:
-                safe_ui_update()
-
-        def save_last_session(kind=None, cat_obj=None, stream_id=None, stream_name=None, stream_url=None, item_obj=None):
-            cur = dict(cache_get("last_session", {}))
-            if kind is not None:
-                cur["kind"] = kind
-            if cat_obj is not None:
-                cur["category_id"] = str(cat_obj.get("category_id", ""))
-                cur["category_name"] = cat_obj.get("category_name", "Kategoria")
-            if stream_id is not None:
-                cur["stream_id"] = str(stream_id)
-            if stream_name is not None:
-                cur["stream_name"] = stream_name
-            if stream_url is not None:
-                cur["stream_url"] = stream_url
-            if item_obj is not None:
-                cur["item_obj"] = item_obj
-            cache_set("last_session", cur)
-
-        def calc_cursor_for_item(items_list, target_id, target_name="", has_back_btn=True):
-            found_raw_idx = -1
-            t_id = str(target_id or "")
-            t_nm = (target_name or "").strip().lower()
-
-            for idx, it in enumerate(items_list):
-                uid = get_item_unique_id(it)
-                if t_id and uid == t_id:
-                    found_raw_idx = idx
-                    break
-
-            if found_raw_idx < 0 and t_nm:
-                for idx, it in enumerate(items_list):
-                    nm = (
-                        it.get("name")
-                        or it.get("title")
-                        or it.get("category_name")
-                        or ""
-                    ).strip().lower()
-                    if nm == t_nm:
-                        found_raw_idx = idx
-                        break
-
-            if found_raw_idx < 0:
-                return 0, (1 if has_back_btn and items_list else 0), None
-
-            p_offset = (found_raw_idx // PAGE_SIZE) * PAGE_SIZE
-            local_pos = found_raw_idx - p_offset
-            extra_top_btns = (1 if has_back_btn else 0) + (1 if p_offset > 0 else 0)
-            return p_offset, local_pos + extra_top_btns, items_list[found_raw_idx]
-
-        def make_tv_button(text_str, on_click_fn, key_str=None, height=46, expand=False):
+        def make_tv_button(text_str, on_click_fn, key_str=None, height=46, expand=False, item_ref=None):
             txt_ctrl = ft.Text(
                 text_str,
                 size=14,
@@ -879,99 +773,225 @@ def main(page: ft.Page):
                 height=height,
                 padding=ft.padding.symmetric(horizontal=12, vertical=6),
                 border_radius=8,
-                bgcolor="#161d30",
-                border=ft.border.all(1, "#1e293b"),
+                bgcolor="#163828",
+                border=ft.border.all(1, "#22543d"),
                 alignment=ft.alignment.center_left,
                 expand=expand,
                 on_click=lambda _: on_click_fn(),
             )
-            box.data = {"text_ctrl": txt_ctrl, "base_text": text_str, "action": on_click_fn}
+            box.data = {
+                "text_ctrl": txt_ctrl,
+                "base_text": text_str,
+                "action": on_click_fn,
+                "item": item_ref,
+            }
             return box
 
         def set_tv_button_text(box, new_text):
             box.data["base_text"] = new_text
             box.data["text_ctrl"].value = new_text
 
-        def publish_status():
-            if stop_event.is_set() or app_state["paused_in_bg"]:
+        def toggle_only_pl(_e=None):
+            state["only_pl"] = not state["only_pl"]
+            cache_set("only_pl", state["only_pl"])
+            set_tv_button_text(
+                btn_only_pl,
+                f"🇵🇱 Kat. PL: {'WŁ.' if state['only_pl'] else 'WYŁ.'}",
+            )
+            if state["view_mode"] == "categories":
+                state["page_offset"] = 0
+                state["list_idx"] = 0
+                render_list()
+            else:
+                safe_ui_update()
+
+        def cycle_vlc_mode(_e=None):
+            cur = state.get("vlc_mode", "vlc_clean")
+            idx = (VLC_MODE_ORDER.index(cur) + 1) % len(VLC_MODE_ORDER) if cur in VLC_MODE_ORDER else 0
+            new_mode = VLC_MODE_ORDER[idx]
+            state["vlc_mode"] = new_mode
+            cache_set("vlc_mode", new_mode)
+            set_tv_button_text(btn_vlc_mode, VLC_MODE_LABELS[new_mode])
+            now_playing_txt.value = f"🔧 Zmieniono tryb odtwarzacza na: {VLC_MODE_LABELS[new_mode]}"
+            safe_ui_update()
+
+        def is_favorite(item):
+            uid = get_item_unique_id(item)
+            if not uid:
+                return False
+            return any(get_item_unique_id(f) == uid for f in favorites_items)
+
+        def toggle_favorite(_e=None):
+            nonlocal favorites_items
+            cur_item = state.get("current_item")
+            if not cur_item:
                 return
+            uid = get_item_unique_id(cur_item)
+            if not uid:
+                return
+            if is_favorite(cur_item):
+                favorites_items = [f for f in favorites_items if get_item_unique_id(f) != uid]
+            else:
+                item_copy = dict(cur_item)
+                item_copy["kind"] = cur_item.get("kind") or state["kind"]
+                favorites_items.insert(0, item_copy)
+            cache_set("favorites_v2", favorites_items)
+            set_tv_button_text(
+                btn_fav_toggle,
+                "⭐ Usuń z Ulub." if is_favorite(cur_item) else "⭐ Dodaj do Ulub.",
+            )
+            render_list()
 
-            def _worker():
+        # Widgety zegara i stopki Vivo
+        clock_txt = ft.Text("00:00", size=32, weight=ft.FontWeight.BOLD, color="white")
+        date_txt = ft.Text("Saturday, 17 Oct 2026", size=13, color="#86efac")
+        footer_playlist_txt = ft.Text("Current Playlist: Brak", size=12, color="#86efac")
+        footer_expire_txt = ft.Text("Playlist Expire Date: Unlimited", size=12, color="#86efac")
+
+        def update_vivo_footer():
+            footer_playlist_txt.value = f"Current Playlist: {state.get('active_profile_name') or 'Domyślna'}"
+            footer_expire_txt.value = f"Playlist Expire Date: {state.get('exp_date_str') or 'Unlimited'}"
+
+        def update_clock_loop():
+            while not stop_event.is_set():
                 try:
-                    local_session = make_session()
-                    clean_id = re.sub(r"[^a-zA-Z0-9_-]", "", cache_get("device_id", device_id))
-                    status_topic = f"iptv_v4_pro_{clean_id}_status"
-                    if state["is_playing"]:
-                        st_lbl = "⏸ PAUZA" if state["paused"] else "▶ ODTWARZANIE"
-                    else:
-                        st_lbl = "⏹ ZATRZYMANO"
-
-                    srv_txt = (
-                        state["active_profile_name"]
-                        if state["client"]
-                        else "Ekran logowania"
-                    )
-                    prof_summary = []
-                    for p in profiles:
-                        prof_summary.append({
-                            "name": p.get("name", "Lista"),
-                            "mode": p.get("mode", "xtream"),
-                            "host": (p.get("server") or p.get("m3u_url") or "")[:30],
-                            "added_at": p.get("added_at", ""),
-                            "active": (
-                                state["client"] is not None
-                                and p.get("name") == state["active_profile_name"]
-                            ),
-                        })
-
-                    snapshot = {
-                        "type": "player_status",
-                        "device_name": cache_get("device_name", device_name),
-                        "device_id": clean_id,
-                        "ts": int(time.time() * 1000),
-                        "time_str": datetime.datetime.now().strftime("%H:%M:%S"),
-                        "state_label": st_lbl,
-                        "now_playing": state["now_playing"],
-                        "active_server": srv_txt,
-                        "only_pl": state["only_pl"],
-                        "current_tab": (
-                            "listy" if state["in_profiles"] else ("ulubione" if state["in_fav"] else state["kind"])
-                        ),
-                        "volume": state["volume"],
-                        "muted": state["muted"],
-                        "profiles": prof_summary,
-                    }
-                    local_session.post(
-                        f"https://ntfy.sh/{status_topic}",
-                        data=json.dumps(snapshot, ensure_ascii=False).encode("utf-8"),
-                        timeout=4,
-                    )
+                    now = datetime.datetime.now()
+                    clock_txt.value = now.strftime("%H:%M")
+                    date_txt.value = now.strftime("%A, %d %b %Y")
+                    safe_ui_update()
                 except Exception:
                     pass
+                time.sleep(10)
 
-            threading.Thread(target=_worker, daemon=True).start()
+        threading.Thread(target=update_clock_loop, daemon=True).start()
 
+        # Główne kafelki pulpitu Vivo
+        def make_vivo_tile(title, icon_char, on_click_fn, is_large=False):
+            t_ctrl = ft.Text(title, size=16, weight=ft.FontWeight.BOLD, color="white", text_align=ft.TextAlign.CENTER)
+            i_ctrl = ft.Text(icon_char, size=38, color="#34d399", text_align=ft.TextAlign.CENTER)
+            box = ft.Container(
+                content=ft.Column([i_ctrl, t_ctrl], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=6),
+                bgcolor="#112e22",
+                border_radius=12,
+                border=ft.border.all(1, "#22543d"),
+                padding=10,
+                expand=is_large,
+                height=160 if is_large else 75,
+                on_click=lambda _: on_click_fn(),
+            )
+            box.data = {"title": title, "action": on_click_fn}
+            return box
+
+        def open_dashboard():
+            state["in_dashboard"] = True
+            state["view_mode"] = "dashboard"
+            state["zone"] = "dashboard"
+            update_vivo_footer()
+            dash_view.visible = True
+            dash_inner_view.visible = False
+            render_dashboard_focus()
+            safe_ui_update()
+
+        def open_section(kind):
+            state["in_dashboard"] = False
+            state["kind"] = kind
+            state["in_fav"] = False
+            state["in_profiles"] = False
+            state["search_query"] = ""
+            state["zone"] = "list"
+            dash_view.visible = False
+            dash_inner_view.visible = True
+            back_to_cats()
+
+        def open_catchup_section():
+            state["in_dashboard"] = False
+            state["kind"] = "live"
+            state["in_fav"] = False
+            state["in_profiles"] = False
+            state["search_query"] = ""
+            state["zone"] = "list"
+            dash_view.visible = False
+            dash_inner_view.visible = True
+            open_category({
+                "category_id": "__CATCHUP__",
+                "category_name": "⏱ KANAŁY Z ARCHIWUM (CATCH UP)",
+            })
+
+        def open_favorites_section():
+            state["in_dashboard"] = False
+            state["in_fav"] = True
+            state["in_profiles"] = False
+            state["view_mode"] = "streams"
+            state["active_cat"] = None
+            state["page_offset"] = 0
+            state["list_idx"] = 0
+            state["zone"] = "list"
+            dash_view.visible = False
+            dash_inner_view.visible = True
+            render_list()
+
+        def open_profiles_section():
+            state["in_dashboard"] = False
+            state["in_fav"] = False
+            state["in_profiles"] = True
+            state["view_mode"] = "profiles"
+            state["active_cat"] = None
+            state["page_offset"] = 0
+            state["list_idx"] = 0
+            state["zone"] = "list"
+            dash_view.visible = False
+            dash_inner_view.visible = True
+            render_list()
+
+        dash_tile_live = make_vivo_tile("Live TV", "📺", lambda: open_section("live"), is_large=True)
+        dash_tile_movies = make_vivo_tile("Movies", "🎬", lambda: open_section("vod"), is_large=True)
+        dash_tile_series = make_vivo_tile("Series", "🎞", lambda: open_section("series"), is_large=True)
+        dash_tile_catchup = make_vivo_tile("Catch Up", "⏱", open_catchup_section, is_large=True)
+        dash_tile_fav = make_vivo_tile("Favorites", "⭐", open_favorites_section, is_large=True)
+        dash_tile_playlists = make_vivo_tile("Playlists", "📋", open_profiles_section, is_large=True)
+
+        dash_tiles = [
+            dash_tile_live,
+            dash_tile_movies,
+            dash_tile_series,
+            dash_tile_catchup,
+            dash_tile_fav,
+            dash_tile_playlists,
+        ]
+
+        def render_dashboard_focus():
+            for idx, tile in enumerate(dash_tiles):
+                is_foc = (state["zone"] == "dashboard" and state["dash_idx"] == idx)
+                if is_foc:
+                    tile.bgcolor = "#059669"
+                    tile.border = ft.border.all(3, "#fbbf24")
+                else:
+                    tile.bgcolor = "#112e22"
+                    tile.border = ft.border.all(1, "#22543d")
+            safe_ui_update()
+
+        # Elementy prawego panelu podglądu (Okładka + EPG + Opis)
         poster_img = ft.Image(
             src="",
             width=150,
-            height=220,
+            height=215,
             fit=ft.ImageFit.COVER,
             border_radius=8,
             visible=False,
         )
         status_info_title = ft.Text(
-            "Wybierz kanał lub film z listy po lewej stronie",
-            size=18,
+            "Wybierz kanał lub film z listy",
+            size=17,
             weight=ft.FontWeight.BOLD,
-            color="#38bdf8",
-            text_align=ft.TextAlign.CENTER,
+            color="#34d399",
+            text_align=ft.TextAlign.LEFT,
         )
         status_info_sub = ft.Text(
-            "🇵🇱 Polskie kanały oraz ostatnio dodane Filmy/Seriale są zawsze ustawiane na górze.\nUżyj przycisku '🇵🇱 Tylko Polskie', aby całkowicie ukryć zagraniczne pozycje.",
+            "Najedź kursorem na pozycję, aby zobaczyć EPG, okładkę lub opis TMDB.\nNaciśnij OK, aby uruchomić odtwarzanie.",
             size=13,
-            color="#94a3b8",
-            text_align=ft.TextAlign.CENTER,
-            max_lines=6,
+            color="#cbd5e1",
+            text_align=ft.TextAlign.LEFT,
+            max_lines=7,
             overflow=ft.TextOverflow.ELLIPSIS,
         )
 
@@ -980,261 +1000,144 @@ def main(page: ft.Page):
                 [
                     poster_img,
                     ft.Column(
-                        [
-                            ft.Text("📺", size=44),
-                            status_info_title,
-                            status_info_sub,
-                        ],
+                        [status_info_title, status_info_sub],
                         alignment=ft.MainAxisAlignment.CENTER,
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        horizontal_alignment=ft.CrossAxisAlignment.START,
                         spacing=8,
                         expand=True,
                     ),
                 ],
-                alignment=ft.MainAxisAlignment.CENTER,
+                alignment=ft.MainAxisAlignment.START,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=16,
             ),
             expand=True,
-            bgcolor="#0f172a",
+            bgcolor="#091811",
             border_radius=8,
-            border=ft.border.all(1, "#1e293b"),
-            alignment=ft.alignment.center,
-            padding=15,
+            border=ft.border.all(1, "#163828"),
+            padding=16,
         )
 
         now_playing_txt = ft.Text(
-            "▶ Pilot TV: ⬅️ ➡️ zmiana panelu | ⬆️ ⬇️ góra/dół | OK zatwierdź | WSTECZ powrót",
+            "▶ Pilot TV: ⬅️ ➡️ zmiana panelu | ⬆️ ⬇️ góra/dół | OK wybierz | WSTECZ cofnij",
             weight=ft.FontWeight.BOLD,
-            size=14,
-            color="#f59e0b",
-        )
-        header_dev_lbl = ft.Text(
-            f"📺 {device_name} [{device_id}]",
             size=13,
-            color="#10b981",
-            weight=ft.FontWeight.BOLD,
+            color="#fbbf24",
         )
-        list_header_lbl = ft.Text(
-            "📂 LISTA KATEGORII",
-            size=13,
-            weight=ft.FontWeight.BOLD,
-            color="#38bdf8",
-        )
+        header_dev_lbl = ft.Text(f"📺 {device_name}", size=12, color="#34d399", weight=ft.FontWeight.BOLD)
+        list_header_lbl = ft.Text("📂 LISTA KATEGORII", size=13, weight=ft.FontWeight.BOLD, color="#34d399")
+        list_view = ft.ListView(expand=True, spacing=6, padding=4, auto_scroll=False)
+        status_banner = ft.Text(f"🟢 Vivo Player gotowy — ID: {device_id}", color="#34d399", size=12)
 
-        list_view = ft.ListView(
-            expand=True, spacing=6, padding=4, auto_scroll=False
-        )
-        status_banner = ft.Text(
-            f"🟢 Zdalny Cloud aktywny — Kod ID: {device_id}",
-            color="#10b981",
-            size=13,
-        )
+        def trigger_focus_preview(item):
+            if not isinstance(item, dict) or ("category_name" in item and "stream_id" not in item and "series_id" not in item):
+                return
+            state["current_item"] = item
+            set_tv_button_text(
+                btn_fav_toggle,
+                "⭐ Usuń z Ulub." if is_favorite(item) else "⭐ Dodaj do Ulub.",
+            )
+            title = item.get("display_title") or item.get("name") or item.get("title") or "Pozycja"
+            icon_url = item.get("stream_icon") or item.get("cover") or ""
+            k = item.get("kind") or state["kind"]
 
-        def update_media_preview_async(title, item=None):
-            icon_url = (item or {}).get("stream_icon") or (item or {}).get("cover") or ""
+            status_info_title.value = f"📺 {title}" if k == "live" else f"🎬 {title}"
             if icon_url and icon_url.startswith("http"):
                 poster_img.src = icon_url
                 poster_img.visible = True
             else:
                 poster_img.visible = False
-            safe_ui_update()
 
-            k = (item or {}).get("kind") or state["kind"]
-            if k in ("vod", "series"):
-                def _bg_tmdb():
-                    tmdb = fetch_tmdb_details(title)
-                    if not tmdb or stop_event.is_set():
+            app_state["preview_seq"] += 1
+            cur_seq = app_state["preview_seq"]
+
+            def _async_preview():
+                time.sleep(0.35)
+                if cur_seq != app_state["preview_seq"] or stop_event.is_set():
+                    return
+                if k == "live" and state.get("client"):
+                    epg_list = state["client"].get_short_epg(item.get("stream_id"))
+                    if cur_seq != app_state["preview_seq"]:
                         return
-                    if tmdb.get("poster"):
-                        poster_img.src = tmdb["poster"]
-                        poster_img.visible = True
-                    plot = tmdb.get("plot") or ""
-                    yr = tmdb.get("year") or ""
-                    rt = tmdb.get("rating") or ""
-                    meta = " • ".join(filter(None, [f"📅 {yr}" if yr else "", f"⭐ {rt}/10" if rt else ""]))
-                    if meta or plot:
-                        status_info_sub.value = f"{meta}\n\n{plot}" if meta else plot
+                    if epg_list:
+                        status_info_sub.value = "\n\n".join(epg_list)
+                    else:
+                        arch = "⏱ Dostępne archiwum Catch Up" if parse_int_safe(item.get("tv_archive"), 0) == 1 else "📡 Transmisja na żywo"
+                        status_info_sub.value = f"{arch}\nBrak szczegółowego programu EPG dla tej stacji."
+                    safe_ui_update()
+                elif k in ("vod", "series"):
+                    tmdb = fetch_tmdb_details(title)
+                    if cur_seq != app_state["preview_seq"]:
+                        return
+                    if tmdb:
+                        if tmdb.get("poster") and not poster_img.visible:
+                            poster_img.src = tmdb["poster"]
+                            poster_img.visible = True
+                        yr = f"Rok: {tmdb['year']}  |  " if tmdb.get("year") else ""
+                        rt = f"Ocena TMDB: ⭐ {tmdb['rating']}/10\n" if tmdb.get("rating") else ""
+                        status_info_sub.value = f"{yr}{rt}{tmdb.get('plot') or 'Brak opisu fabuły.'}"
+                    else:
+                        status_info_sub.value = "Naciśnij OK, aby rozpocząć odtwarzanie lub wybrać odcinek."
                     safe_ui_update()
 
-                threading.Thread(target=_bg_tmdb, daemon=True).start()
+            threading.Thread(target=_async_preview, daemon=True).start()
 
-        def format_cred_label(field_key):
-            if field_key == "server":
-                val = creds["server"] or "(brak)"
-                return f"🌐 Serwer: {val}"
-            if field_key == "username":
-                val = creds["username"] or "(kliknij OK, aby wpisać)"
-                return f"👤 Użytkownik: {val}"
-            if field_key == "password":
-                val = ("*" * len(creds["password"])) if creds["password"] else "(kliknij OK, aby wpisać)"
-                return f"🔑 Hasło: {val}"
-            if field_key == "m3u_url":
-                val = (creds["m3u_url"][:38] + "...") if len(creds["m3u_url"]) > 38 else (creds["m3u_url"] or "(opcjonalnie link M3U)")
-                return f"📋 Lista M3U: {val}"
-            return ""
-
-        def refresh_login_button_labels():
-            set_tv_button_text(btn_edit_srv, format_cred_label("server"))
-            set_tv_button_text(btn_edit_usr, format_cred_label("username"))
-            set_tv_button_text(btn_edit_pas, format_cred_label("password"))
-            set_tv_button_text(btn_edit_m3u, format_cred_label("m3u_url"))
-            set_tv_button_text(btn_saved_profiles_login, f"📋 WYBIERZ ZAPISANĄ LISTĘ ({len(profiles)})")
-
-        def toggle_auto_login(_e=None):
-            state["auto_login"] = not state["auto_login"]
-            cache_set("auto_login", state["auto_login"])
-            set_tv_button_text(
-                btn_toggle_autologin,
-                f"⚡ Auto-logowanie przy starcie: {'WŁ.' if state['auto_login'] else 'WYŁ.'}",
-            )
-            update_focus_styles(full_refresh=True)
-
-        def open_profiles_dialog_from_login(_e=None):
-            if not profiles:
-                status_banner.value = "ℹ️ Brak zapisanych list. Wpisz dane poniżej lub wyślij listę przez Cloud."
-                status_banner.color = "#f59e0b"
-                safe_ui_update()
+        def refresh_current_list(_e=None):
+            if not state["client"]:
                 return
-
-            app_state["dialog_open"] = True
-            col_items = []
-
-            def _select_p(prof):
-                dlg.open = False
-                app_state["dialog_open"] = False
-                apply_profile(prof)
-
-            def _delete_p(prof):
-                nonlocal profiles
-                profiles = [p for p in profiles if p.get("name") != prof.get("name")]
-                cache_set("profiles", profiles)
-                refresh_login_button_labels()
-                dlg.open = False
-                app_state["dialog_open"] = False
-                safe_ui_update()
-                publish_status()
-
-            for idx, p in enumerate(profiles):
-                p_name = p.get("name", f"Lista {idx + 1}")
-                p_mode = (p.get("mode") or "xtream").upper()
-                p_host = (p.get("server") or p.get("m3u_url") or "")[:32]
-                is_act = p_name == state.get("active_profile_name")
-                prefix = "🟢 [AKTYWNA] " if is_act else ""
-
-                row = ft.Row(
-                    [
-                        ft.ElevatedButton(
-                            f"{prefix}{idx + 1}. [{p_mode}] {p_name} ({p_host})",
-                            on_click=lambda _e, pr=p: _select_p(pr),
-                            bgcolor="#2563eb" if is_act else "#1e293b",
-                            color="white",
-                            expand=True,
-                        ),
-                        ft.ElevatedButton(
-                            "🗑",
-                            on_click=lambda _e, pr=p: _delete_p(pr),
-                            bgcolor="#7f1d1d",
-                            color="white",
-                        ),
-                    ],
-                    spacing=6,
-                )
-                col_items.append(row)
-
-            dlg = ft.AlertDialog(
-                title=ft.Text("📋 Zapisane Listy / Serwery"),
-                content=ft.Container(
-                    content=ft.Column(col_items, tight=True, spacing=8, scroll=ft.ScrollMode.AUTO),
-                    width=480,
-                    height=300,
-                ),
-                actions=[
-                    ft.ElevatedButton(
-                        "Zamknij",
-                        on_click=lambda _: (setattr(dlg, "open", False), app_state.update({"dialog_open": False}), safe_ui_update()),
-                    )
-                ],
-                on_dismiss=lambda _: app_state.update({"dialog_open": False}),
-            )
-            page.overlay.append(dlg)
-            dlg.open = True
+            state["streams_cache"].clear()
+            state["categories"] = {"live": [], "vod": [], "series": []}
+            state["search_query"] = ""
+            now_playing_txt.value = "🔄 Odświeżanie listy z serwera..."
+            list_header_lbl.value = "⏳ Pobieranie najnowszych pozycji..."
+            list_view.controls.clear()
             safe_ui_update()
 
-        def open_field_editor(field_key, title_str, is_pass=False):
-            app_state["dialog_open"] = True
-            tf_in = ft.TextField(
-                label=title_str,
-                value=creds.get(field_key, ""),
-                password=is_pass,
-                can_reveal_password=is_pass,
-                autofocus=True,
-                on_submit=lambda _: _save_field(),
-            )
+            def _reload_w():
+                try:
+                    if isinstance(state["client"], M3UClient):
+                        state["client"].login()
+                    cur_kind = state["kind"]
+                    raw_cats = state["client"].get_categories(cur_kind) or []
+                    state["categories"][cur_kind] = build_special_top_categories(cur_kind, raw_cats)
+                    if state["view_mode"] in ("streams", "episodes") and state.get("active_cat") and not state["in_fav"] and not state["in_profiles"]:
+                        act_cat = state["active_cat"]
+                        items = state["client"].get_streams(cur_kind, act_cat.get("category_id")) or []
+                        for it in items:
+                            it["kind"] = cur_kind
+                        state["streams"] = items
+                        state["streams_cache"][(cur_kind, str(act_cat.get("category_id")))] = items
+                        state["view_mode"] = "streams"
+                        state["page_offset"] = 0
+                        state["list_idx"] = 1 if items else 0
+                        render_list()
+                    else:
+                        open_dashboard()
+                except Exception as ex:
+                    now_playing_txt.value = f"❌ Błąd: {ex}"
+                    safe_ui_update()
 
-            def _save_field(_e=None):
-                creds[field_key] = (tf_in.value or "").strip() if field_key != "password" else (tf_in.value or "")
-                cache_set(field_key, creds[field_key])
-                refresh_login_button_labels()
-                dlg.open = False
-                app_state["dialog_open"] = False
-                update_focus_styles(full_refresh=True)
-
-            def _cancel_field(_e=None):
-                dlg.open = False
-                app_state["dialog_open"] = False
-                update_focus_styles(full_refresh=True)
-
-            dlg = ft.AlertDialog(
-                title=ft.Text(f"✏️ Edytuj: {title_str}"),
-                content=ft.Column([tf_in], tight=True),
-                actions=[
-                    ft.ElevatedButton("Anuluj", on_click=_cancel_field),
-                    ft.ElevatedButton("💾 Zapisz", on_click=_save_field, bgcolor="#2563eb", color="white"),
-                ],
-                on_dismiss=lambda _: app_state.update({"dialog_open": False}),
-            )
-            page.overlay.append(dlg)
-            dlg.open = True
-            safe_ui_update()
+            threading.Thread(target=_reload_w, daemon=True).start()
 
         def open_search_dialog(_e=None):
             app_state["dialog_open"] = True
-            search_in = ft.TextField(
-                label="Wpisz szukaną nazwę kanału, filmu lub kategorii",
-                value=state.get("search_query", ""),
-                autofocus=True,
-                on_submit=lambda _: _apply_search(),
-            )
+            search_in = ft.TextField(label="Szukaj na liście (puste = wyczyść)", value=state.get("search_query", ""), autofocus=True, on_submit=lambda _: _apply())
 
-            def _apply_search(_e=None):
+            def _apply(_e=None):
                 state["search_query"] = (search_in.value or "").strip()
                 state["page_offset"] = 0
                 state["list_idx"] = 0
-                set_tv_button_text(
-                    btn_search,
-                    f"🔍 Szukaj: {state['search_query'][:10]}" if state["search_query"] else "🔍 Szukaj",
-                )
                 dlg.open = False
                 app_state["dialog_open"] = False
-                render_list()
-
-            def _clear_search(_e=None):
-                state["search_query"] = ""
-                state["page_offset"] = 0
-                state["list_idx"] = 0
-                set_tv_button_text(btn_search, "🔍 Szukaj")
-                dlg.open = False
-                app_state["dialog_open"] = False
-                render_list()
+                if state["in_dashboard"]:
+                    open_section("live")
+                else:
+                    render_list()
 
             dlg = ft.AlertDialog(
-                title=ft.Text("🔍 Filtruj / Szukaj na liście"),
+                title=ft.Text("🔍 Wyszukiwarka"),
                 content=ft.Column([search_in], tight=True),
-                actions=[
-                    ft.ElevatedButton("Wyczyść filtr", on_click=_clear_search, bgcolor="#7f1d1d", color="white"),
-                    ft.ElevatedButton("🔍 Filtruj", on_click=_apply_search, bgcolor="#2563eb", color="white"),
-                ],
+                actions=[ft.ElevatedButton("Szukaj", on_click=_apply, bgcolor="#059669", color="white")],
                 on_dismiss=lambda _: app_state.update({"dialog_open": False}),
             )
             page.overlay.append(dlg)
@@ -1244,232 +1147,38 @@ def main(page: ft.Page):
         def open_remote_settings_dlg(_e=None):
             nonlocal device_name, device_id
             app_state["dialog_open"] = True
-            name_in = ft.TextField(
-                label="Nazwa własna tego odbiornika",
-                value=cache_get("device_name", device_name),
-            )
-            id_in = ft.TextField(
-                label="Unikalny Kod ID",
-                value=cache_get("device_id", device_id),
-            )
+            name_in = ft.TextField(label="Nazwa odbiornika", value=device_name)
+            id_in = ft.TextField(label="Kod ID", value=device_id)
 
             def _save(_):
                 nonlocal device_name, device_id
-                nn = name_in.value.strip() or "Android TV"
-                ni = re.sub(r"[^a-zA-Z0-9_-]", "", id_in.value.strip()) or device_id
-                device_name = nn
-                device_id = ni
-                cache_set("device_name", nn)
-                cache_set("device_id", ni)
-                header_dev_lbl.value = f"📺 {nn} [{ni}]"
-                status_banner.value = f"🟢 Zdalny Cloud aktywny — Kod ID: {ni}"
+                device_name = name_in.value.strip() or "Android TV"
+                device_id = re.sub(r"[^a-zA-Z0-9_-]", "", id_in.value.strip()) or device_id
+                cache_set("device_name", device_name)
+                cache_set("device_id", device_id)
+                header_dev_lbl.value = f"📺 {device_name}"
                 dlg.open = False
                 app_state["dialog_open"] = False
                 safe_ui_update()
-                publish_status()
 
             dlg = ft.AlertDialog(
-                title=ft.Text("🌐 Konfiguracja Zdalnego Odbiornika"),
-                content=ft.Column(
-                    [
-                        ft.Text(
-                            "Wpisz dokładnie ten sam Kod ID w aplikacji na komputerze lub w panelu WWW:",
-                            size=12,
-                        ),
-                        name_in,
-                        id_in,
-                    ],
-                    tight=True,
-                    spacing=10,
-                ),
-                actions=[
-                    ft.ElevatedButton(
-                        "Anuluj",
-                        on_click=lambda _: (setattr(dlg, "open", False), app_state.update({"dialog_open": False}), safe_ui_update()),
-                    ),
-                    ft.ElevatedButton(
-                        "💾 Zapisz",
-                        on_click=_save,
-                        bgcolor="#2563eb",
-                        color="white",
-                    ),
-                ],
+                title=ft.Text("🌐 Ustawienia odbiornika"),
+                content=ft.Column([name_in, id_in], tight=True),
+                actions=[ft.ElevatedButton("Zapisz", on_click=_save, bgcolor="#059669", color="white")],
                 on_dismiss=lambda _: app_state.update({"dialog_open": False}),
             )
             page.overlay.append(dlg)
             dlg.open = True
             safe_ui_update()
 
-        btn_remote_id = make_tv_button("🌐 Zmień Nazwę / Kod ID Odbiornika", open_remote_settings_dlg, height=40)
-        btn_edit_srv = make_tv_button(
-            format_cred_label("server"),
-            lambda: open_field_editor("server", "Adres serwera (http://serwer:8080)"),
-            height=42,
-        )
-        btn_edit_usr = make_tv_button(
-            format_cred_label("username"),
-            lambda: open_field_editor("username", "Nazwa użytkownika"),
-            height=42,
-        )
-        btn_edit_pas = make_tv_button(
-            format_cred_label("password"),
-            lambda: open_field_editor("password", "Hasło", is_pass=True),
-            height=42,
-        )
-        btn_edit_m3u = make_tv_button(
-            format_cred_label("m3u_url"),
-            lambda: open_field_editor("m3u_url", "Link do listy M3U / M3U8"),
-            height=42,
-        )
-        btn_submit_login = make_tv_button("🚀 POŁĄCZ Z SERWEREM", lambda: do_login(), height=46)
-        btn_saved_profiles_login = make_tv_button(
-            f"📋 WYBIERZ ZAPISANĄ LISTĘ ({len(profiles)})",
-            open_profiles_dialog_from_login,
-            height=42,
-        )
-        btn_toggle_autologin = make_tv_button(
-            f"⚡ Auto-logowanie przy starcie: {'WŁ.' if state['auto_login'] else 'WYŁ.'}",
-            toggle_auto_login,
-            height=40,
-        )
-        btn_exit_app = make_tv_button("🚪 ZAMKNIJ APLIKACJĘ", close_app_cleanly, height=40)
-
-        login_items = [
-            btn_remote_id,              # 0
-            btn_edit_srv,               # 1
-            btn_edit_usr,               # 2
-            btn_edit_pas,               # 3
-            btn_edit_m3u,               # 4
-            btn_submit_login,           # 5
-            btn_saved_profiles_login,   # 6
-            btn_toggle_autologin,       # 7
-            btn_exit_app,               # 8
-        ]
-
-        # =====================================================================
-        # BEZPIECZNE URUCHAMIANIE VLC
-        # =====================================================================
-        def launch_vlc_intent(raw_url: str, title: str = ""):
-            if not raw_url:
-                return
-
-            now = time.time()
-            if now - state["last_vlc_ts"] < 1.2:
-                return
-            state["last_vlc_ts"] = now
-
-            clean_u = raw_url.strip().splitlines()[0].strip()
-            mode = state.get("vlc_mode", "vlc_clean")
-            no_proto = re.sub(r"^https?://", "", clean_u, flags=re.IGNORECASE)
-            scheme = "https" if clean_u.lower().startswith("https://") else "http"
-
-            if mode == "vlc_clean":
-                target_url = f"vlc://{no_proto}"
-            elif mode == "intent":
-                target_url = (
-                    f"intent://{no_proto}#Intent;"
-                    f"scheme={scheme};"
-                    f"type=video/*;"
-                    f"package=org.videolan.vlc;"
-                    f"end"
-                )
-            elif mode == "vlc_full":
-                target_url = clean_u if clean_u.startswith("vlc://") else f"vlc://{clean_u}"
-            else:
-                target_url = clean_u
-
-            now_playing_txt.value = f"🚀 VLC ({mode}): {title or state['now_playing']}"
-            status_info_title.value = f"▶ {title or state['now_playing']}"
-            status_info_sub.value = (
-                f"Aktywna lista: {state.get('active_profile_name') or 'Domyślna'}\n"
-                f"Przekazano do VLC ({VLC_MODE_LABELS.get(mode, mode)}):\n{target_url[:68]}..."
-            )
-            safe_ui_update()
-
-            def _delayed_launch():
-                time.sleep(0.06)
-                try:
-                    page.launch_url(target_url)
-                except Exception as ex:
-                    now_playing_txt.value = f"❌ Błąd uruchomienia: {ex}"
-                    safe_ui_update()
-
-            threading.Thread(target=_delayed_launch, daemon=True).start()
-
-        def open_in_android_vlc(_e=None):
-            launch_vlc_intent(state["playing_url"], state["now_playing"])
-
-        def toggle_auto_vlc(_e=None):
-            state["auto_vlc"] = not state["auto_vlc"]
-            cache_set("auto_vlc", state["auto_vlc"])
-            set_tv_button_text(
-                btn_auto_vlc,
-                f"Auto-start: {'WŁ.' if state['auto_vlc'] else 'WYŁ.'}",
-            )
-            update_focus_styles(full_refresh=True)
-
-        def toggle_vlc_scheme(_e=None):
-            modes = ["vlc_clean", "intent", "vlc_full", "http"]
-            cur = state.get("vlc_mode", "vlc_clean")
-            nxt = modes[(modes.index(cur) + 1) % len(modes)] if cur in modes else "vlc_clean"
-            state["vlc_mode"] = nxt
-            cache_set("vlc_mode", nxt)
-            set_tv_button_text(btn_scheme_vlc, VLC_MODE_LABELS[nxt])
-            update_focus_styles(full_refresh=True)
-
-        def play_stream_url(url, title, item=None):
-            state["playing_url"] = url
-            state["now_playing"] = title
-            state["current_item"] = item
-            state["is_playing"] = True
-            state["paused"] = False
-            now_playing_txt.value = f"▶ Wybrano: {title}"
-            status_info_title.value = f"▶ {title}"
-            set_tv_button_text(
-                btn_fav_toggle,
-                "⭐ Usuń z ulubionych" if is_favorite(item) else "⭐ Dodaj do ulubionych",
-            )
-            update_media_preview_async(title, item=item)
-
-            if state["auto_vlc"]:
-                launch_vlc_intent(url, title)
-            publish_status()
-
-        def stop_playback(_e=None):
-            state["is_playing"] = False
-            state["paused"] = False
-            state["now_playing"] = "Brak aktywnego strumienia"
-            now_playing_txt.value = "⏹ Zatrzymano odtwarzanie"
-            status_info_title.value = "⏹ Zatrzymano"
-            safe_ui_update()
-            publish_status()
-
-        def toggle_play_pause(_e=None):
-            state["paused"] = not state["paused"]
-            now_playing_txt.value = (
-                "⏸ PAUZA" if state["paused"] else f"▶ {state['now_playing']}"
-            )
-            safe_ui_update()
-            publish_status()
-
         def show_info_dialog(_e=None):
-            title = state["now_playing"]
+            cur_item = state.get("current_item")
+            title = (cur_item.get("name") or cur_item.get("title")) if isinstance(cur_item, dict) else state["now_playing"]
             app_state["dialog_open"] = True
             dlg = ft.AlertDialog(
-                title=ft.Text(f"Informacje TMDB: {title}"),
-                content=ft.Text("⏳ Pobieranie polskiego opisu z TMDB..."),
-                actions=[
-                    ft.ElevatedButton(
-                        "Zamknij",
-                        on_click=lambda _: (
-                            setattr(dlg, "open", False),
-                            app_state.update({"dialog_open": False}),
-                            safe_ui_update(),
-                        ),
-                        bgcolor="#2563eb",
-                        color="white",
-                    )
-                ],
+                title=ft.Text(f"TMDB: {title}"),
+                content=ft.Text("⏳ Pobieranie opisu..."),
+                actions=[ft.ElevatedButton("Zamknij", on_click=lambda _: (setattr(dlg, "open", False), app_state.update({"dialog_open": False}), safe_ui_update()))],
                 on_dismiss=lambda _: app_state.update({"dialog_open": False}),
             )
             page.overlay.append(dlg)
@@ -1478,1270 +1187,183 @@ def main(page: ft.Page):
 
             def _w():
                 tmdb = fetch_tmdb_details(title)
-                if tmdb:
-                    txt = f"Rok: {tmdb.get('year')}\nOcena: ⭐ {tmdb.get('rating')}/10\n\n{tmdb.get('plot') or 'Brak opisu.'}"
-                else:
-                    txt = "Brak danych w bazie TMDB dla tej pozycji."
+                txt = f"Rok: {tmdb.get('year')}\nOcena: ⭐ {tmdb.get('rating')}/10\n\n{tmdb.get('plot') or 'Brak opisu.'}" if tmdb else "Brak danych w bazie TMDB."
                 dlg.content = ft.Text(txt)
                 safe_ui_update()
 
             threading.Thread(target=_w, daemon=True).start()
 
-        # =====================================================================
-        # ODŚWIEŻANIE LISTY Z USTAWIENIEM NOWOŚCI I KANAŁÓW PL NA GÓRZE
-        # =====================================================================
-        def refresh_current_list(_e=None):
-            if not state["client"]:
+        def launch_vlc_intent(raw_url: str, title: str = ""):
+            if not raw_url:
                 return
+            clean_u = raw_url.strip().splitlines()[0].strip()
+            mode = state.get("vlc_mode", "vlc_clean")
+            no_proto = re.sub(r"^https?://", "", clean_u, flags=re.IGNORECASE)
+            scheme = "https" if clean_u.lower().startswith("https://") else "http"
 
-            state["streams_cache"].clear()
-            state["categories"] = {"live": [], "vod": [], "series": []}
-            state["search_query"] = ""
-            set_tv_button_text(btn_search, "🔍 Szukaj")
+            if mode == "vlc_clean":
+                target_url = f"vlc://{no_proto}"
+            elif mode == "intent":
+                target_url = f"intent://{no_proto}#Intent;scheme={scheme};type=video/*;package=org.videolan.vlc;end"
+            elif mode == "vlc_full":
+                target_url = f"vlc://{clean_u}"
+            else:
+                target_url = clean_u
 
-            now_playing_txt.value = "🔄 Odświeżanie listy z serwera (🇵🇱 PL i 🆕 Nowości na górze)..."
-            list_header_lbl.value = "⏳ Pobieranie najnowszych pozycji z serwera..."
-            list_view.controls.clear()
+            now_playing_txt.value = f"🚀 VLC ({mode}): {title or state['now_playing']}"
             safe_ui_update()
+            threading.Thread(target=lambda: page.launch_url(target_url), daemon=True).start()
 
-            def _reload_worker():
-                try:
-                    if isinstance(state["client"], M3UClient):
-                        state["client"].login()
+        def play_stream_url(url, title, item=None):
+            state["playing_url"] = url
+            state["now_playing"] = title
+            state["current_item"] = item
+            state["is_playing"] = True
+            now_playing_txt.value = f"▶ Odtwarzanie: {title}"
+            status_info_title.value = f"▶ {title}"
+            if state["auto_vlc"]:
+                launch_vlc_intent(url, title)
+            else:
+                safe_ui_update()
 
-                    cur_kind = state["kind"]
-                    raw_cats = state["client"].get_categories(cur_kind) or []
-                    state["categories"][cur_kind] = build_special_top_categories(cur_kind, raw_cats)
-
-                    if state["view_mode"] in ("streams", "episodes") and state.get("active_cat") and not state["in_fav"] and not state["in_profiles"]:
-                        act_cat = state["active_cat"]
-                        items = state["client"].get_streams(cur_kind, act_cat.get("category_id")) or []
-                        for it in items:
-                            it["kind"] = cur_kind
-                        cat_id = str(act_cat.get("category_id", "__ALL__"))
-                        state["streams_cache"][(cur_kind, cat_id)] = items
-                        state["streams"] = items
-                        state["view_mode"] = "streams"
-                        state["page_offset"] = 0
-                        state["list_idx"] = 1 if items else 0
-                        state["zone"] = "list"
-                        now_playing_txt.value = f"✅ Odświeżono! Nowości i polskie pozycje są na górze ({len(items)} poz.)."
-                        render_list()
-                    else:
-                        if cur_kind in ("vod", "series") and not state["in_fav"] and not state["in_profiles"]:
-                            recent_cat = {
-                                "category_id": "__RECENT__",
-                                "category_name": "🆕 OSTATNIO DODANE (NOWOŚCI NA GÓRZE)",
-                            }
-                            now_playing_txt.value = "✅ Odświeżono! Najnowsze filmy/seriale ustawiono na górze listy."
-                            open_category(recent_cat, force_reload=True)
-                        else:
-                            state["view_mode"] = "categories"
-                            state["page_offset"] = 0
-                            state["list_idx"] = 0
-                            state["zone"] = "list"
-                            now_playing_txt.value = "✅ Odświeżono listę kategorii (🇵🇱 Polskie na górze)."
-                            render_list()
-                except Exception as ex:
-                    now_playing_txt.value = f"❌ Błąd odświeżania: {ex}"
-                    safe_ui_update()
-
-            threading.Thread(target=_reload_worker, daemon=True).start()
-
-        # Zakładki u góry
-        btn_tab_live = make_tv_button("📺 TV", lambda: switch_tab("live", 0), height=42, expand=True)
-        btn_tab_vod = make_tv_button("🎬 Filmy", lambda: switch_tab("vod", 1), height=42, expand=True)
-        btn_tab_ser = make_tv_button("🎞 Seriale", lambda: switch_tab("series", 2), height=42, expand=True)
-        btn_tab_fav = make_tv_button("⭐ Ulubione", lambda: switch_tab("favorites", 3), height=42, expand=True)
-        btn_tab_prof = make_tv_button("📋 Listy", lambda: switch_tab("profiles", 4), height=42, expand=True)
-        tab_buttons = [btn_tab_live, btn_tab_vod, btn_tab_ser, btn_tab_fav, btn_tab_prof]
-
-        btn_vlc = make_tv_button("🚀 Otwórz w VLC", open_in_android_vlc, height=42)
-        btn_only_pl = make_tv_button(
-            f"🇵🇱 Tylko Polskie: {'WŁ.' if state['only_pl'] else 'WYŁ.'}",
-            toggle_only_pl,
-            height=42,
-        )
-        btn_refresh_cat = make_tv_button("🔄 Odśwież Nowości", refresh_current_list, height=42)
-        btn_search = make_tv_button("🔍 Szukaj", open_search_dialog, height=42)
-        btn_fav_toggle = make_tv_button("⭐ Dodaj do ulubionych", toggle_favorite, height=42)
-        btn_tmdb = make_tv_button("ℹ Opis TMDB", show_info_dialog, height=42)
-        btn_auto_vlc = make_tv_button(
-            f"Auto-start: {'WŁ.' if state['auto_vlc'] else 'WYŁ.'}",
-            toggle_auto_vlc,
-            height=42,
-        )
-        btn_scheme_vlc = make_tv_button(
-            VLC_MODE_LABELS[state["vlc_mode"]],
-            toggle_vlc_scheme,
-            height=42,
-        )
-        btn_change_list = make_tv_button("📋 Zmień listę", lambda: switch_tab("profiles", 4), height=42)
-        btn_cloud_id = make_tv_button("🌐 Kod ID", open_remote_settings_dlg, height=42)
-        btn_logout = make_tv_button("⇄ Logowanie", lambda: do_logout(), height=42)
-        btn_quit_dash = make_tv_button("🚪 Wyjdź", close_app_cleanly, height=42)
+        btn_vlc = make_tv_button("🚀 Otwórz VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"]), height=40)
+        btn_vlc_mode = make_tv_button(VLC_MODE_LABELS[state["vlc_mode"]], cycle_vlc_mode, height=40)
+        btn_only_pl = make_tv_button(f"🇵🇱 Kat. PL: {'WŁ.' if state['only_pl'] else 'WYŁ.'}", toggle_only_pl, height=40)
+        btn_refresh_cat = make_tv_button("🔄 Odśwież", refresh_current_list, height=40)
+        btn_search = make_tv_button("🔍 Szukaj", open_search_dialog, height=40)
+        btn_fav_toggle = make_tv_button("⭐ Ulubione", toggle_favorite, height=40)
+        btn_tmdb = make_tv_button("ℹ TMDB", show_info_dialog, height=40)
+        btn_home = make_tv_button("🏠 Menu", open_dashboard, height=40)
+        btn_logout = make_tv_button("⇄ Konto", lambda: do_logout(), height=40)
 
         right_buttons = [
             btn_vlc,
+            btn_vlc_mode,
             btn_only_pl,
             btn_refresh_cat,
             btn_search,
             btn_fav_toggle,
             btn_tmdb,
-            btn_auto_vlc,
-            btn_scheme_vlc,
-            btn_change_list,
-            btn_cloud_id,
+            btn_home,
             btn_logout,
-            btn_quit_dash,
         ]
         list_item_buttons = []
         list_item_actions = []
 
-        left_panel = ft.Container(
-            width=450,
-            bgcolor="#111625",
-            padding=10,
-            border_radius=10,
-            border=ft.border.all(3, "#38bdf8"),
-        )
-        right_panel = ft.Container(
+        # Ekran Logowania Vivo
+        btn_edit_srv = make_tv_button(f"🌐 Serwer: {creds['server'] or 'ustaw'}", lambda: open_field_editor("server", "Adres serwera (http://...)"))
+        btn_edit_usr = make_tv_button(f"👤 Login: {creds['username'] or 'ustaw'}", lambda: open_field_editor("username", "Nazwa użytkownika"))
+        btn_edit_pas = make_tv_button("🔑 Hasło: " + ("********" if creds["password"] else "ustaw"), lambda: open_field_editor("password", "Hasło", is_pass=True))
+        btn_edit_m3u = make_tv_button(f"📋 Link M3U: {'[Zapisano]' if creds['m3u_url'] else 'opcjonalnie'}", lambda: open_field_editor("m3u_url", "Pełny link M3U"))
+        btn_submit_login = make_tv_button("🚀 ZALOGUJ DO VIVO TV", lambda: do_login(), height=48)
+        login_items = [btn_edit_srv, btn_edit_usr, btn_edit_pas, btn_edit_m3u, btn_submit_login]
+
+        def open_field_editor(field_key, title_str, is_pass=False):
+            app_state["dialog_open"] = True
+            tf_in = ft.TextField(label=title_str, value=creds.get(field_key, ""), password=is_pass, autofocus=True, on_submit=lambda _: _save())
+
+            def _save(_=None):
+                creds[field_key] = (tf_in.value or "").strip()
+                cache_set(field_key, creds[field_key])
+                set_tv_button_text(btn_edit_srv, f"🌐 Serwer: {creds['server'] or 'ustaw'}")
+                set_tv_button_text(btn_edit_usr, f"👤 Login: {creds['username'] or 'ustaw'}")
+                set_tv_button_text(btn_edit_pas, "🔑 Hasło: " + ("********" if creds["password"] else "ustaw"))
+                set_tv_button_text(btn_edit_m3u, f"📋 Link M3U: {'[Zapisano]' if creds['m3u_url'] else 'opcjonalnie'}")
+                dlg.open = False
+                app_state["dialog_open"] = False
+                update_focus_styles()
+
+            dlg = ft.AlertDialog(
+                title=ft.Text(title_str),
+                content=ft.Column([tf_in], tight=True),
+                actions=[ft.ElevatedButton("Zapisz", on_click=_save, bgcolor="#059669", color="white")],
+                on_dismiss=lambda _: app_state.update({"dialog_open": False}),
+            )
+            page.overlay.append(dlg)
+            dlg.open = True
+            safe_ui_update()
+
+        login_view = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text("🟢 VIVO PLAYER IPTV", size=24, weight=ft.FontWeight.BOLD, color="#34d399"),
+                    status_banner,
+                    *login_items,
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=10,
+                width=520,
+            ),
+            alignment=ft.alignment.center,
             expand=True,
-            bgcolor="#111625",
-            padding=10,
-            border_radius=10,
-            border=ft.border.all(1, "#1e293b"),
+            visible=True,
+            bgcolor="#0b1f15",
+            padding=20,
         )
 
-        login_view = ft.Container(expand=True, visible=True)
-        dashboard_view = ft.Container(expand=True, visible=False)
-
-        # =====================================================================
-        # MIKRO-ODŚWIEŻANIE FOKUSU (b.update() DLA POJEDYNCZEGO KAFELKA)
-        # =====================================================================
-        def style_single_list_btn(idx, is_focused, single_update=False):
-            if not (0 <= idx < len(list_item_buttons)):
-                return
-            b = list_item_buttons[idx]
-            base_t = b.data["base_text"]
-            if is_focused:
-                b.bgcolor = "#0284c7"
-                b.border = ft.border.all(3, "#f59e0b")
-                b.data["text_ctrl"].color = "#ffffff"
-                b.data["text_ctrl"].size = 15
-                b.data["text_ctrl"].value = f"▶  {base_t}"
-            else:
-                b.bgcolor = "#161d30"
-                b.border = ft.border.all(1, "#1e293b")
-                b.data["text_ctrl"].color = "#cbd5e1"
-                b.data["text_ctrl"].size = 14
-                b.data["text_ctrl"].value = base_t
-            if single_update:
-                try:
-                    b.update()
-                except Exception:
-                    pass
-
-        def update_focus_styles(full_refresh=False):
-            if login_view.visible:
-                for i, item in enumerate(login_items):
-                    is_focused = state["zone"] == "login" and state["login_idx"] == i
-                    base_t = item.data["base_text"]
-                    if is_focused:
-                        item.bgcolor = "#f59e0b"
-                        item.border = ft.border.all(3, "#ffffff")
-                        item.data["text_ctrl"].color = "black"
-                        item.data["text_ctrl"].value = f"▶  {base_t}"
-                    else:
-                        if i == 0:
-                            item.bgcolor = "#0d9488"
-                        elif i == 5:
-                            item.bgcolor = "#2563eb"
-                        elif i == 6:
-                            item.bgcolor = "#4f46e5"
-                        elif i == 8:
-                            item.bgcolor = "#7f1d1d"
-                        else:
-                            item.bgcolor = "#161d30"
-                        item.border = ft.border.all(1, "#334155")
-                        item.data["text_ctrl"].color = "white"
-                        item.data["text_ctrl"].value = base_t
-                safe_ui_update()
-                return
-
-            if not dashboard_view.visible:
-                return
-
-            if (
-                not full_refresh
-                and state["zone"] == "list"
-                and state["prev_zone"] == "list"
-                and 0 <= state["prev_list_idx"] < len(list_item_buttons)
-            ):
-                style_single_list_btn(state["prev_list_idx"], False, single_update=True)
-                style_single_list_btn(state["list_idx"], True, single_update=True)
-                state["prev_list_idx"] = state["list_idx"]
-                try:
-                    list_view.scroll_to(key=f"item_{state['list_idx']}", duration=35)
-                except Exception:
-                    pass
-                return
-
-            left_panel.border = ft.border.all(
-                3 if state["zone"] in ("tabs", "list") else 1,
-                "#f59e0b" if state["zone"] in ("tabs", "list") else "#1e293b",
-            )
-            right_panel.border = ft.border.all(
-                3 if state["zone"] == "right" else 1,
-                "#f59e0b" if state["zone"] == "right" else "#1e293b",
-            )
-
-            for i, b in enumerate(tab_buttons):
-                is_focused = state["zone"] == "tabs" and state["tab_idx"] == i
-                is_current_kind = (
-                    (not state["in_fav"] and not state["in_profiles"] and i == 0 and state["kind"] == "live")
-                    or (not state["in_fav"] and not state["in_profiles"] and i == 1 and state["kind"] == "vod")
-                    or (not state["in_fav"] and not state["in_profiles"] and i == 2 and state["kind"] == "series")
-                    or (state["in_fav"] and i == 3)
-                    or (state["in_profiles"] and i == 4)
-                )
-                base_t = b.data["base_text"]
-                if is_focused:
-                    b.bgcolor = "#f59e0b"
-                    b.border = ft.border.all(3, "#ffffff")
-                    b.data["text_ctrl"].color = "black"
-                    b.data["text_ctrl"].value = f"▶ {base_t}"
-                elif is_current_kind:
-                    b.bgcolor = "#2563eb"
-                    b.border = ft.border.all(2, "#60a5fa")
-                    b.data["text_ctrl"].color = "white"
-                    b.data["text_ctrl"].value = base_t
-                else:
-                    b.bgcolor = "#161d30"
-                    b.border = ft.border.all(1, "#1e293b")
-                    b.data["text_ctrl"].color = "#94a3b8"
-                    b.data["text_ctrl"].value = base_t
-
-            for i in range(len(list_item_buttons)):
-                style_single_list_btn(i, state["zone"] == "list" and state["list_idx"] == i, single_update=False)
-
-            for i, b in enumerate(right_buttons):
-                is_focused = state["zone"] == "right" and state["right_idx"] == i
-                base_t = b.data["base_text"]
-                if is_focused:
-                    b.bgcolor = "#f59e0b"
-                    b.border = ft.border.all(3, "#ffffff")
-                    b.data["text_ctrl"].color = "black"
-                    b.data["text_ctrl"].value = f"▶ {base_t}"
-                else:
-                    if b == btn_refresh_cat:
-                        b.bgcolor = "#0d9488"
-                    elif b == btn_only_pl and state["only_pl"]:
-                        b.bgcolor = "#15803d"
-                    else:
-                        b.bgcolor = "#1e293b"
-                    b.border = ft.border.all(1, "#334155")
-                    b.data["text_ctrl"].color = "white"
-                    b.data["text_ctrl"].value = base_t
-
-            state["prev_zone"] = state["zone"]
-            state["prev_list_idx"] = state["list_idx"]
-            safe_ui_update()
-
-            if state["zone"] == "list" and list_item_buttons:
-                idx = max(0, min(state["list_idx"], len(list_item_buttons) - 1))
-                try:
-                    list_view.scroll_to(key=f"item_{idx}", duration=45)
-                except Exception:
-                    pass
-
-        def change_page(delta):
-            total_len = len(state.get("filtered", []))
-            if total_len <= 0:
-                return
-            new_off = max(0, min(state["page_offset"] + delta, ((total_len - 1) // PAGE_SIZE) * PAGE_SIZE))
-            if new_off != state["page_offset"]:
-                state["page_offset"] = new_off
-                state["list_idx"] = 0
-                render_list()
-
-        def delete_saved_profile(prof_name):
-            nonlocal profiles
-            profiles = [p for p in profiles if p.get("name") != prof_name]
-            cache_set("profiles", profiles)
-            refresh_login_button_labels()
-            now_playing_txt.value = f"🗑 Usunięto listę: {prof_name}"
-            render_list()
-            publish_status()
-
-        def render_list():
-            list_view.controls.clear()
-            list_item_buttons.clear()
-            list_item_actions.clear()
-
-            v_mode = state["view_mode"]
-            btn_idx = 0
-            pl_ids = get_current_pl_cat_ids()
-
-            # WIDOK 1: MENEDŻER ZAPISANYCH LIST
-            if state["in_profiles"] or v_mode == "profiles":
-                list_header_lbl.value = f"📋 ZAPISANE LISTY / SERWERY ({len(profiles)})"
-
-                b_add_new = make_tv_button(
-                    "➕ DODAJ / EDYTUJ LISTĘ RĘCZNIE",
-                    lambda: do_logout(),
-                    key_str=f"item_{btn_idx}",
-                    height=44,
-                )
-                list_item_buttons.append(b_add_new)
-                list_item_actions.append(do_logout)
-                list_view.controls.append(b_add_new)
-                btn_idx += 1
-
-                for idx, prof in enumerate(profiles):
-                    p_name = prof.get("name", f"Lista {idx + 1}")
-                    p_mode = (prof.get("mode") or "xtream").upper()
-                    p_host = (prof.get("server") or prof.get("m3u_url") or "")[:28]
-                    is_act = p_name == state.get("active_profile_name")
-                    act_badge = "🟢 [AKTYWNA] " if is_act else "📋 "
-
-                    lbl = f"{idx + 1}. {act_badge}[{p_mode}] {p_name} ({p_host})"
-                    act_fn = lambda pr=prof: apply_profile(pr)
-                    b_prof = make_tv_button(lbl, act_fn, key_str=f"item_{btn_idx}", height=48)
-                    list_item_buttons.append(b_prof)
-                    list_item_actions.append(act_fn)
-                    list_view.controls.append(b_prof)
-                    btn_idx += 1
-
-                    if not is_act or len(profiles) > 1:
-                        del_lbl = f"   ↳ 🗑 Usuń listę: {p_name}"
-                        del_fn = lambda nm=p_name: delete_saved_profile(nm)
-                        b_del = make_tv_button(del_lbl, del_fn, key_str=f"item_{btn_idx}", height=38)
-                        list_item_buttons.append(b_del)
-                        list_item_actions.append(del_fn)
-                        list_view.controls.append(b_del)
-                        btn_idx += 1
-
-                if state["list_idx"] >= len(list_item_buttons):
-                    state["list_idx"] = max(0, len(list_item_buttons) - 1)
-                update_focus_styles(full_refresh=True)
-                return
-
-            # WIDOK 2: KATEGORIE / KANAŁY / ODCINKI / ULUBIONE
-            only_pl_tag = " [🇵🇱 TYLKO PL]" if state["only_pl"] else ""
-            if state["in_fav"]:
-                kind_lbl = f"⭐ ULUBIONE{only_pl_tag}"
-            else:
-                kind_lbl = {
-                    "live": f"TV NA ŻYWO{only_pl_tag}",
-                    "vod": f"FILMY (🆕 Nowości){only_pl_tag}",
-                    "series": f"SERIALE (🆕 Nowości){only_pl_tag}",
-                }[state["kind"]]
-
-            if v_mode == "categories":
-                raw = list(state["categories"].get(state["kind"], []))
-                if state["only_pl"]:
-                    filtered_cats = [
-                        c for c in raw
-                        if str(c.get("category_id", "")) in ("__ALL__", "__RECENT__")
-                        or is_polish_text(c.get("category_name", ""))
-                    ]
-                    # Filtr ma być ścisły: gdy nie znaleziono polskich kategorii,
-                    # pozostają wyłącznie pozycje specjalne (np. Wszystkie / Ostatnio dodane).
-                    raw = filtered_cats
-                hdr_base = f"📂 {kind_lbl}"
-            elif v_mode == "episodes":
-                raw = list(state["episodes"])
-                hdr_base = f"🎞 {state['active_series_title']}"
-            elif state["in_fav"]:
-                raw = list(favorites_items)
-                if state["only_pl"]:
-                    raw = [it for it in raw if is_polish_item(it, pl_ids)]
-                hdr_base = f"⭐ ULUBIONE POZYCJE{only_pl_tag}"
-            else:
-                raw = list(state["streams"])
-                act_cat = state.get("active_cat") or {}
-                cat_nm = act_cat.get("category_name", "Lista")
-                cat_id_str = str(act_cat.get("category_id", ""))
-                cat_is_pl = (
-                    cat_id_str not in ("__ALL__", "__RECENT__")
-                    and (cat_id_str in pl_ids or is_polish_text(cat_nm))
-                )
-                # Gdy włączony jest filtr 'Tylko Polskie', a jesteśmy w kategorii ogólnej (Wszystkie / Ostatnio dodane)
-                # lub zagranicznej, filtrujemy pojedyncze pozycje do wyłącznie polskich.
-                if state["only_pl"] and not cat_is_pl:
-                    raw = [it for it in raw if is_polish_item(it, pl_ids)]
-                hdr_base = f"📺 {cat_nm}{only_pl_tag}"
-
-            q = state.get("search_query", "").strip().lower()
-            if q:
-                raw = [
-                    it for it in raw
-                    if q in str(
-                        it.get("name")
-                        or it.get("title")
-                        or it.get("display_title")
-                        or it.get("category_name")
-                        or ""
-                    ).lower()
-                ]
-                list_header_lbl.value = f"{hdr_base} [🔍 '{q}': {len(raw)}]"
-            else:
-                list_header_lbl.value = f"{hdr_base} ({len(raw)})"
-
-            state["filtered"] = raw
-
-            if q:
-                def _clear_q():
-                    state["search_query"] = ""
-                    set_tv_button_text(btn_search, "🔍 Szukaj")
-                    state["page_offset"] = 0
-                    state["list_idx"] = 0
-                    render_list()
-
-                b_clr = make_tv_button(
-                    f"❌ WYCZYŚĆ FILTR SZUKANIA: '{state['search_query']}'",
-                    _clear_q,
-                    key_str=f"item_{btn_idx}",
-                    height=40,
-                )
-                list_item_buttons.append(b_clr)
-                list_item_actions.append(_clear_q)
-                list_view.controls.append(b_clr)
-                btn_idx += 1
-
-            if v_mode == "episodes":
-                b_back = make_tv_button(
-                    "↩ WRÓĆ DO LISTY SERIALI",
-                    back_to_streams,
-                    key_str=f"item_{btn_idx}",
-                    height=44,
-                )
-                list_item_buttons.append(b_back)
-                list_item_actions.append(back_to_streams)
-                list_view.controls.append(b_back)
-                btn_idx += 1
-            elif v_mode == "streams" and not state["in_fav"]:
-                b_back = make_tv_button(
-                    "↩ WRÓĆ DO KATEGORII",
-                    back_to_cats,
-                    key_str=f"item_{btn_idx}",
-                    height=44,
-                )
-                list_item_buttons.append(b_back)
-                list_item_actions.append(back_to_cats)
-                list_view.controls.append(b_back)
-                btn_idx += 1
-
-            start = state["page_offset"]
-            end = start + PAGE_SIZE
-            slice_items = raw[start:end]
-
-            if start > 0:
-                b_prev = make_tv_button(
-                    f"⬆ POPRZEDNIE ({max(1, start - PAGE_SIZE + 1)} - {start})",
-                    lambda: change_page(-PAGE_SIZE),
-                    key_str=f"item_{btn_idx}",
-                    height=42,
-                )
-                list_item_buttons.append(b_prev)
-                list_item_actions.append(lambda: change_page(-PAGE_SIZE))
-                list_view.controls.append(b_prev)
-                btn_idx += 1
-
-            for local_i, item in enumerate(slice_items):
-                real_num = start + local_i + 1
-                if v_mode == "categories":
-                    cat_name = item.get("category_name", "Kategoria")
-                    cat_id_str = str(item.get("category_id", ""))
-                    pl_tag = "🇵🇱 " if (cat_id_str not in ("__ALL__", "__RECENT__") and is_polish_text(cat_name)) else ""
-                    action_fn = lambda c=item: open_category(c)
-                    label = f"{real_num}. 📁 {pl_tag}{cat_name}"
-                elif v_mode == "episodes":
-                    ep_title = item.get("display_title") or item.get("title") or "Odcinek"
-                    action_fn = lambda ep=item: play_episode(ep)
-                    label = f"{real_num}. 🎞 {ep_title}"
-                else:
-                    k = item.get("kind") or state["kind"]
-                    fav_icon = "⭐ " if is_favorite(item) else ""
-                    pl_icon = "🇵🇱 " if is_polish_item(item, pl_ids) else ""
-                    badge = (
-                        "[TV]"
-                        if k == "live"
-                        else ("[FILM]" if k == "vod" else "[SERIAL]")
-                    )
-                    nm = item.get("name") or item.get("title") or "Pozycja"
-                    action_fn = lambda it=item: on_stream_click(it)
-                    label = f"{real_num}. {fav_icon}{pl_icon}{badge} {nm}"
-
-                b_item = make_tv_button(
-                    label,
-                    action_fn,
-                    key_str=f"item_{btn_idx}",
-                    height=48,
-                )
-                list_item_buttons.append(b_item)
-                list_item_actions.append(action_fn)
-                list_view.controls.append(b_item)
-                btn_idx += 1
-
-            if end < len(raw):
-                b_next = make_tv_button(
-                    f"⬇ NASTĘPNE ({end + 1} - {min(len(raw), end + PAGE_SIZE)}) z {len(raw)}",
-                    lambda: change_page(PAGE_SIZE),
-                    key_str=f"item_{btn_idx}",
-                    height=42,
-                )
-                list_item_buttons.append(b_next)
-                list_item_actions.append(lambda: change_page(PAGE_SIZE))
-                list_view.controls.append(b_next)
-                btn_idx += 1
-
-            if state["list_idx"] >= len(list_item_buttons):
-                state["list_idx"] = max(0, len(list_item_buttons) - 1)
-
-            update_focus_styles(full_refresh=True)
-
-        def back_to_streams():
-            state["view_mode"] = "streams"
-            p_off, l_idx, _ = calc_cursor_for_item(
-                state["streams"],
-                state.get("active_series_id", ""),
-                state.get("active_series_title", ""),
-                has_back_btn=True,
-            )
-            state["page_offset"] = p_off
-            state["list_idx"] = l_idx
-            render_list()
-
-        def back_to_cats():
-            if state["in_fav"] or state["in_profiles"]:
-                switch_tab("live", 0)
-                return
-
-            prev_cat = state.get("active_cat")
-            prev_cat_id = str((prev_cat or {}).get("category_id", ""))
-            prev_cat_nm = (prev_cat or {}).get("category_name", "")
-
-            state["view_mode"] = "categories"
-            state["active_cat"] = None
-
-            def _apply_cats_cursor():
-                cats_list = state["categories"].get(state["kind"], [])
-                if state["only_pl"]:
-                    filtered_c = [
-                        c for c in cats_list
-                        if str(c.get("category_id", "")) in ("__ALL__", "__RECENT__")
-                        or is_polish_text(c.get("category_name", ""))
-                    ]
-                    if len(filtered_c) > (2 if state["kind"] in ("vod", "series") else 1):
-                        cats_list = filtered_c
-
-                if prev_cat_id or prev_cat_nm:
-                    p_off, l_idx, _ = calc_cursor_for_item(
-                        cats_list, prev_cat_id, prev_cat_nm, has_back_btn=False
-                    )
-                    state["page_offset"] = p_off
-                    state["list_idx"] = l_idx
-                else:
-                    state["page_offset"] = 0
-                    state["list_idx"] = 0
-                render_list()
-
-            if not state["categories"].get(state["kind"]):
-                list_header_lbl.value = "⏳ Pobieranie kategorii (🇵🇱 Polskie na górze)..."
-                safe_ui_update()
-
-                def _w():
-                    try:
-                        cats = state["client"].get_categories(state["kind"]) or []
-                        state["categories"][state["kind"]] = build_special_top_categories(
-                            state["kind"], cats
-                        )
-                        _apply_cats_cursor()
-                    except Exception:
-                        pass
-
-                threading.Thread(target=_w, daemon=True).start()
-            else:
-                _apply_cats_cursor()
-
-        def open_category(cat_obj, target_stream_id=None, target_stream_name=None, force_reload=False):
-            state["view_mode"] = "streams"
-            state["active_cat"] = cat_obj
-            state["page_offset"] = 0
-            state["list_idx"] = 0
-
-            save_last_session(kind=state["kind"], cat_obj=cat_obj)
-
-            cat_id = str(cat_obj.get("category_id", "__ALL__"))
-            cache_key = (state["kind"], cat_id)
-
-            if not force_reload and cache_key in state["streams_cache"]:
-                items = state["streams_cache"][cache_key]
-                state["streams"] = items
-                if target_stream_id or target_stream_name:
-                    p_off, l_idx, matched = calc_cursor_for_item(
-                        items, target_stream_id, target_stream_name, has_back_btn=True
-                    )
-                    state["page_offset"] = p_off
-                    state["list_idx"] = l_idx
-                elif items:
-                    state["page_offset"] = 0
-                    state["list_idx"] = 1
-                render_list()
-                return
-
-            list_view.controls.clear()
-            list_header_lbl.value = f"⏳ Ładowanie i sortowanie: {cat_obj.get('category_name', '')}..."
-            safe_ui_update()
-
-            def _w():
-                try:
-                    items = (
-                        state["client"].get_streams(
-                            state["kind"], cat_obj.get("category_id")
-                        )
-                        or []
-                    )
-                    for it in items:
-                        it["kind"] = state["kind"]
-                    state["streams"] = items
-                    state["streams_cache"][cache_key] = items
-
-                    if target_stream_id or target_stream_name:
-                        p_off, l_idx, matched = calc_cursor_for_item(
-                            items,
-                            target_stream_id,
-                            target_stream_name,
-                            has_back_btn=True,
-                        )
-                        state["page_offset"] = p_off
-                        state["list_idx"] = l_idx
-                        if matched:
-                            m_title = matched.get("name") or matched.get("title") or ""
-                            now_playing_txt.value = f"⏮ Ostatnio oglądane: {m_title} (naciśnij OK)"
-                            status_info_title.value = f"⏮ {m_title}"
-                    elif items:
-                        state["page_offset"] = 0
-                        state["list_idx"] = 1
-
-                    render_list()
-                except Exception:
-                    pass
-
-            threading.Thread(target=_w, daemon=True).start()
-
-        def play_episode(ep_item):
-            ext = ep_item.get("container_extension", "mp4") or "mp4"
-            url = state["client"].build_stream_url(
-                "series",
-                ep_item.get("id"),
-                ext,
-                item=ep_item,
-            )
-            ep_title = ep_item.get("display_title") or ep_item.get("title") or "Odcinek"
-            save_last_session(stream_url=url)
-            play_stream_url(url, ep_title, item=ep_item)
-
-        def on_stream_click(item):
-            k = item.get("kind") or state["kind"]
-            title = item.get("name") or item.get("title") or "Strumień"
-            uid = get_item_unique_id(item)
-
-            save_last_session(
-                kind=k,
-                cat_obj=state.get("active_cat"),
-                stream_id=uid,
-                stream_name=title,
-                item_obj=item,
-            )
-
-            if k == "series":
-                state["active_series_id"] = uid
-                state["active_series_title"] = title
-                update_media_preview_async(title, item=item)
-                list_view.controls.clear()
-                list_header_lbl.value = f"⏳ Pobieranie odcinków: {title}..."
-                safe_ui_update()
-
-                def _w():
-                    try:
-                        info = state["client"].get_series_info(item.get("series_id"))
-                        eps_map = info.get("episodes") or {}
-                        flat_eps = []
-                        sorted_seasons = sorted(
-                            eps_map.keys(),
-                            key=lambda x: int(x) if str(x).isdigit() else 999,
-                        )
-                        for s_num in sorted_seasons:
-                            for ep in eps_map[s_num]:
-                                ep_num = ep.get("episode_num", "")
-                                ep_raw_title = ep.get("title") or f"Odcinek {ep_num}"
-                                ep_copy = dict(ep)
-                                ep_copy["display_title"] = (
-                                    f"S{int(s_num):02d}E{int(ep_num):02d} - {ep_raw_title}"
-                                    if str(s_num).isdigit() and str(ep_num).isdigit()
-                                    else f"Sezon {s_num} - {ep_raw_title}"
-                                )
-                                flat_eps.append(ep_copy)
-
-                        state["episodes"] = flat_eps
-                        state["view_mode"] = "episodes"
-                        state["page_offset"] = 0
-                        state["list_idx"] = 1 if flat_eps else 0
-                        render_list()
-                    except Exception:
-                        back_to_streams()
-
-                threading.Thread(target=_w, daemon=True).start()
-                return
-
-            ext = item.get(
-                "container_extension", "ts" if k == "live" else "mp4"
-            ) or ("ts" if k == "live" else "mp4")
-            url = state["client"].build_stream_url(
-                k, item.get("stream_id"), ext, item=item
-            )
-            save_last_session(stream_url=url, item_obj=item)
-            play_stream_url(url, title, item=item)
-
-        def switch_tab(tab_key, tab_idx=0):
-            state["tab_idx"] = tab_idx
-            state["page_offset"] = 0
-            state["list_idx"] = 0
-            state["zone"] = "list"
-
-            if tab_key == "favorites":
-                state["in_fav"] = True
-                state["in_profiles"] = False
-                state["view_mode"] = "streams"
-                state["active_cat"] = None
-                render_list()
-            elif tab_key == "profiles":
-                state["in_profiles"] = True
-                state["in_fav"] = False
-                state["view_mode"] = "profiles"
-                state["active_cat"] = None
-                render_list()
-            else:
-                state["in_fav"] = False
-                state["in_profiles"] = False
-                state["kind"] = tab_key
-                back_to_cats()
-            publish_status()
-
-        def restore_last_session():
-            last = cache_get("last_session", {})
-            if not isinstance(last, dict) or not last.get("category_id"):
-                switch_tab("live", 0)
-                return
-
-            saved_kind = last.get("kind", "live")
-            if saved_kind not in ("live", "vod", "series"):
-                saved_kind = "live"
-
-            tab_map = {"live": 0, "vod": 1, "series": 2}
-            state["kind"] = saved_kind
-            state["tab_idx"] = tab_map[saved_kind]
-            state["in_fav"] = False
-            state["in_profiles"] = False
-            state["zone"] = "list"
-
-            saved_cat_id = str(last.get("category_id", ""))
-            saved_cat_name = last.get("category_name", "Ostatnia kategoria")
-            saved_stream_id = str(last.get("stream_id", ""))
-            saved_stream_name = last.get("stream_name", "")
-            saved_stream_url = last.get("stream_url", "")
-            saved_item = last.get("item_obj")
-
-            if saved_stream_name:
-                state["now_playing"] = saved_stream_name
-                state["playing_url"] = saved_stream_url
-                state["current_item"] = saved_item
-
-            list_view.controls.clear()
-            list_header_lbl.value = f"⏳ Przywracanie: {saved_cat_name}..."
-            safe_ui_update()
-
-            def _w():
-                try:
-                    cats = state["client"].get_categories(saved_kind) or []
-                    all_cats = build_special_top_categories(saved_kind, cats)
-                    state["categories"][saved_kind] = all_cats
-
-                    target_cat = None
-                    for c in all_cats:
-                        if str(c.get("category_id", "")) == saved_cat_id:
-                            target_cat = c
-                            break
-                    if not target_cat and saved_cat_name:
-                        for c in all_cats:
-                            if (
-                                (c.get("category_name") or "").strip().lower()
-                                == saved_cat_name.strip().lower()
-                            ):
-                                target_cat = c
-                                break
-
-                    if not target_cat:
-                        state["view_mode"] = "categories"
-                        state["page_offset"] = 0
-                        state["list_idx"] = 0
-                        render_list()
-                        return
-
-                    open_category(
-                        target_cat,
-                        target_stream_id=saved_stream_id,
-                        target_stream_name=saved_stream_name,
-                    )
-                except Exception:
-                    switch_tab("live", 0)
-
-            threading.Thread(target=_w, daemon=True).start()
-
-        # =====================================================================
-        # OBSŁUGA PILOTA ANDROID TV
-        # =====================================================================
-        def on_key_event(e: ft.KeyboardEvent):
-            if app_state["dialog_open"]:
-                return
-
-            key = e.key
-
-            if login_view.visible:
-                if key == "Arrow Down":
-                    if state["login_idx"] < len(login_items) - 1:
-                        state["login_idx"] += 1
-                    update_focus_styles(full_refresh=True)
-                elif key == "Arrow Up":
-                    if state["login_idx"] > 0:
-                        state["login_idx"] -= 1
-                    update_focus_styles(full_refresh=True)
-                elif key in ("Enter", "Select", " "):
-                    now = time.time()
-                    if now - state["last_ok_ts"] < 0.35:
-                        return
-                    state["last_ok_ts"] = now
-
-                    idx = state["login_idx"]
-                    if 0 <= idx < len(login_items):
-                        login_items[idx].data["action"]()
-                return
-
-            if not dashboard_view.visible:
-                return
-
-            if key in ("Page Down", "Channel Down"):
-                change_page(PAGE_SIZE)
-                return
-            elif key in ("Page Up", "Channel Up"):
-                change_page(-PAGE_SIZE)
-                return
-
-            if key == "Arrow Right":
-                if state["zone"] == "tabs":
-                    if state["tab_idx"] < len(tab_buttons) - 1:
-                        state["tab_idx"] += 1
-                    else:
-                        state["zone"] = "right"
-                        state["right_idx"] = 0
-                elif state["zone"] == "list":
-                    state["zone"] = "right"
-                    state["right_idx"] = 0
-                elif state["zone"] == "right":
-                    if state["right_idx"] < len(right_buttons) - 1:
-                        state["right_idx"] += 1
-                update_focus_styles(full_refresh=True)
-
-            elif key == "Arrow Left":
-                if state["zone"] == "right":
-                    if state["right_idx"] > 0:
-                        state["right_idx"] -= 1
-                    else:
-                        state["zone"] = "list"
-                elif state["zone"] == "tabs":
-                    if state["tab_idx"] > 0:
-                        state["tab_idx"] -= 1
-                update_focus_styles(full_refresh=True)
-
-            elif key == "Arrow Down":
-                if state["zone"] == "tabs":
-                    state["zone"] = "list"
-                    if state["list_idx"] >= len(list_item_buttons):
-                        state["list_idx"] = 0
-                    update_focus_styles(full_refresh=True)
-                elif state["zone"] == "list":
-                    if list_item_buttons and state["list_idx"] < len(list_item_buttons) - 1:
-                        state["list_idx"] += 1
-                        update_focus_styles(full_refresh=False)
-                elif state["zone"] == "right":
-                    if right_buttons and state["right_idx"] < len(right_buttons) - 1:
-                        state["right_idx"] += 1
-                        update_focus_styles(full_refresh=True)
-
-            elif key == "Arrow Up":
-                if state["zone"] == "list":
-                    if state["list_idx"] > 0:
-                        state["list_idx"] -= 1
-                        update_focus_styles(full_refresh=False)
-                    else:
-                        state["zone"] = "tabs"
-                        update_focus_styles(full_refresh=True)
-                elif state["zone"] == "right":
-                    if state["right_idx"] > 0:
-                        state["right_idx"] -= 1
-                        update_focus_styles(full_refresh=True)
-
-            elif key in ("Enter", "Select", " ", "Media Play / Pause"):
-                now = time.time()
-                if now - state["last_ok_ts"] < 0.35:
-                    return
-                state["last_ok_ts"] = now
-
-                if state["zone"] == "tabs":
-                    if 0 <= state["tab_idx"] < len(tab_buttons):
-                        if state["tab_idx"] == 3:
-                            switch_tab("favorites", 3)
-                        elif state["tab_idx"] == 4:
-                            switch_tab("profiles", 4)
-                        else:
-                            kinds = ["live", "vod", "series"]
-                            switch_tab(kinds[state["tab_idx"]], state["tab_idx"])
-                elif state["zone"] == "list":
-                    if list_item_actions and 0 <= state["list_idx"] < len(list_item_actions):
-                        list_item_actions[state["list_idx"]]()
-                elif state["zone"] == "right":
-                    idx = state["right_idx"]
-                    if 0 <= idx < len(right_buttons):
-                        right_buttons[idx].data["action"]()
-
-            elif key in ("Backspace", "Escape"):
-                if state["view_mode"] == "episodes":
-                    back_to_streams()
-                elif state["view_mode"] == "streams" and not state["in_fav"] and not state["in_profiles"]:
-                    back_to_cats()
-
-        page.on_keyboard_event = on_key_event
-
-        # =====================================================================
-        # LOGOWANIE I ZAPISYWANIE WGRANYCH LIST W PAMIĘCI APK
-        # =====================================================================
-        def do_login(_e=None, is_auto=False, profile_name_hint=""):
-            if state["is_logging_in"]:
-                return
-            state["is_logging_in"] = True
-
-            if is_auto:
-                status_banner.value = "⚡ Automatyczne łączenie z zapisanym serwerem..."
-            else:
-                status_banner.value = "⏳ Łączenie z serwerem..."
-            status_banner.color = "#38bdf8"
-            safe_ui_update()
-
-            def _w():
-                try:
-                    m3u_val = creds["m3u_url"].strip()
-                    srv_val = creds["server"].strip()
-                    usr_val = creds["username"].strip()
-                    pas_val = creds["password"]
-
-                    if m3u_val and (not usr_val or not pas_val):
-                        ext = extract_xtream_from_m3u_url(m3u_val)
-                        if ext:
-                            client = XtreamClient(*ext)
-                        else:
-                            client = M3UClient(m3u_val)
-                    else:
-                        client = XtreamClient(srv_val, usr_val, pas_val)
-
-                    client.login()
-                    state["client"] = client
-                    state["categories"] = {"live": [], "vod": [], "series": []}
-                    state["streams_cache"].clear()
-
-                    saved_name = register_or_update_profile(
-                        profile_name_hint or state.get("active_profile_name", ""),
-                        srv_val,
-                        usr_val,
-                        pas_val,
-                        m3u_val,
-                    )
-                    state["active_profile_name"] = saved_name or f"{client.username} ({client.server})"
-
-                    cache_set("server", srv_val)
-                    cache_set("username", usr_val)
-                    cache_set("password", pas_val)
-                    cache_set("m3u_url", m3u_val)
-                    refresh_login_button_labels()
-
-                    header_dev_lbl.value = f"📺 {device_name} [{device_id}]  •  📋 {state['active_profile_name']}"
-
-                    login_view.visible = False
-                    dashboard_view.visible = True
-                    state["zone"] = "list"
-
-                    restore_last_session()
-                    publish_status()
-                except Exception as ex:
-                    status_banner.value = f"❌ Błąd logowania: {ex}"
-                    status_banner.color = "#f87171"
-                    state["login_idx"] = 5
-                    update_focus_styles(full_refresh=True)
-                finally:
-                    state["is_logging_in"] = False
-
-            threading.Thread(target=_w, daemon=True).start()
-
-        def do_logout(_e=None):
-            stop_playback()
-            state["client"] = None
-            state["streams_cache"].clear()
-            dashboard_view.visible = False
-            login_view.visible = True
-            state["zone"] = "login"
-            state["login_idx"] = 5
-            refresh_login_button_labels()
-            status_banner.value = "ℹ️ Możesz wybrać inną zapisaną listę lub wpisać nowe dane."
-            status_banner.color = "#38bdf8"
-            update_focus_styles(full_refresh=True)
-            publish_status()
-
-        def apply_profile(prof):
-            mode = prof.get("mode", "xtream")
-            name = prof.get("name", "Zdalna Lista")
-            state["active_profile_name"] = name
-            cache_set("active_profile_name", name)
-            cache_set("last_session", {})
-            state["streams_cache"].clear()
-
-            if mode == "m3u" or (prof.get("m3u_url") and not prof.get("username")):
-                creds["m3u_url"] = prof.get("m3u_url") or prof.get("url") or ""
-                creds["server"] = "http://"
-                creds["username"] = ""
-                creds["password"] = ""
-            else:
-                creds["server"] = prof.get("server") or prof.get("host") or ""
-                creds["username"] = prof.get("username") or prof.get("user") or ""
-                creds["password"] = prof.get("password") or prof.get("pass") or ""
-                creds["m3u_url"] = ""
-
-            refresh_login_button_labels()
-            now_playing_txt.value = f"⏳ Przełączanie na listę: {name}..."
-            safe_ui_update()
-            do_login(profile_name_hint=name)
-
-        def handle_remote_command(cmd):
-            nonlocal profiles, device_name
-            c_type = cmd.get("type") or cmd.get("action") or cmd.get("cmd") or ""
-
-            if c_type in (
-                "add_profile",
-                "send_list",
-                "new_list",
-                "add_list",
-                "push_list",
-            ) or ("server" in cmd and "username" in cmd) or ("m3u_url" in cmd):
-                prof_name = (
-                    cmd.get("name")
-                    or cmd.get("profile_name")
-                    or f"Lista {len(profiles) + 1}"
-                )
-                mode = cmd.get("mode") or (
-                    "m3u" if cmd.get("m3u_url") and not cmd.get("username") else "xtream"
-                )
-                new_prof = {
-                    "name": prof_name,
-                    "mode": mode,
-                    "server": cmd.get("server") or cmd.get("host") or "",
-                    "username": cmd.get("username") or cmd.get("user") or "",
-                    "password": cmd.get("password") or cmd.get("pass") or "",
-                    "m3u_url": cmd.get("m3u_url") or cmd.get("url") or "",
-                    "added_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                }
-                profiles = [p for p in profiles if p.get("name") != prof_name]
-                profiles.insert(0, new_prof)
-                cache_set("profiles", profiles)
-                refresh_login_button_labels()
-
-                switch_now = cmd.get("switch", cmd.get("auto_switch", cmd.get("activate", True)))
-                if switch_now:
-                    apply_profile(new_prof)
-                else:
-                    if state["in_profiles"]:
-                        render_list()
-                    publish_status()
-
-            elif c_type in (
-                "switch_profile",
-                "select_profile",
-                "activate_profile",
-                "switch_list",
-                "switch",
-            ):
-                target = cmd.get("name") or cmd.get("profile_name")
-                for p in profiles:
-                    if p.get("name") == target:
-                        apply_profile(p)
-                        break
-
-            elif c_type in (
-                "delete_profile",
-                "remove_profile",
-                "del_profile",
-                "delete_list",
-                "delete",
-            ):
-                target = cmd.get("name") or cmd.get("profile_name")
-                delete_saved_profile(target)
-
-            elif c_type in ("set_name", "rename", "set_device_name", "save_name"):
-                nn = (cmd.get("device_name") or cmd.get("name") or "").strip()
-                if nn:
-                    device_name = nn
-                    cache_set("device_name", nn)
-                    cur_id = cache_get("device_id", device_id)
-                    header_dev_lbl.value = f"📺 {nn} [{cur_id}]  •  📋 {state['active_profile_name']}"
-                    safe_ui_update()
-                    publish_status()
-
-            elif c_type in ("remote_control", "control", "player", "key", "command"):
-                act = cmd.get("command") or cmd.get("action") or cmd.get("key") or ""
-                _exec_player_action(act)
-            elif c_type in (
-                "play_pause",
-                "toggle",
-                "stop",
-                "mute",
-                "vol_up",
-                "vol_down",
-                "logout",
-                "refresh",
-                "reload_list",
-                "only_pl",
-                "toggle_only_pl",
-                "ping",
-                "status",
-            ):
-                _exec_player_action(c_type)
-
-        def _exec_player_action(act):
-            if act in ("play_pause", "toggle", "play", "pause"):
-                toggle_play_pause()
-            elif act == "stop":
-                stop_playback()
-            elif act == "mute":
-                state["muted"] = not state["muted"]
-                publish_status()
-            elif act in ("vol_up", "volume_up"):
-                state["volume"] = min(100, state["volume"] + 10)
-                publish_status()
-            elif act in ("vol_down", "volume_down"):
-                state["volume"] = max(0, state["volume"] - 10)
-                publish_status()
-            elif act == "logout":
-                do_logout()
-            elif act in ("reload_list", "refresh_list"):
-                refresh_current_list()
-            elif act in ("only_pl", "toggle_only_pl"):
-                toggle_only_pl()
-            elif act in ("refresh", "ping", "status", "get_status"):
-                publish_status()
-
-        def cloud_listener():
-            nonlocal processed_ids
-            listener_session = make_session()
-            while not stop_event.is_set():
-                if not app_state["paused_in_bg"]:
-                    try:
-                        clean_id = re.sub(r"[^a-zA-Z0-9_-]", "", cache_get("device_id", device_id))
-                        topics = f"iptv_v4_pro_{clean_id},iptv_v4_pro_{clean_id}_cmd"
-                        url = f"https://ntfy.sh/{topics}/json?poll=1&since=30m"
-                        r = listener_session.get(url, timeout=4)
-                        if r.status_code == 200 and not stop_event.is_set():
-                            for line in r.text.splitlines():
-                                if not line.strip():
-                                    continue
-                                event = json.loads(line)
-                                msg_id = event.get("id")
-                                if not msg_id or msg_id in processed_ids:
-                                    continue
-                                if event.get("event") != "message":
-                                    continue
-
-                                processed_ids.append(msg_id)
-                                # Ograniczona lista zachowuje kolejność odebrania i nie rośnie bez końca.
-                                processed_ids = processed_ids[-200:]
-                                cache_set("processed_ids", processed_ids)
-
-                                raw_msg = event.get("message", "")
-                                try:
-                                    payload = json.loads(raw_msg)
-                                except Exception:
-                                    continue
-
-                                if not isinstance(payload, dict) or payload.get("type") == "player_status":
-                                    continue
-
-                                handle_remote_command(payload)
-                    except Exception:
-                        pass
-                if stop_event.wait(2.5):
-                    break
-
-        threading.Thread(target=cloud_listener, daemon=True).start()
-
-        login_view.content = ft.Column(
-            [
-                ft.Container(
-                    content=ft.Column(
+        # Główny interfejs Vivo Dashboard
+        dash_view = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row(
                         [
-                            ft.Text(
-                                "▶ IPTV V5.5 PRO ANDROID TV",
-                                size=20,
-                                weight=ft.FontWeight.BOLD,
-                                color="#38bdf8",
+                            ft.Row([ft.Text("🟢", size=24), ft.Text("VIVO Player", size=20, weight=ft.FontWeight.BOLD, color="#34d399")], spacing=8),
+                            ft.Column([clock_txt, date_txt], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                            ft.Row(
+                                [
+                                    ft.IconButton(ft.Icons.SEARCH, icon_color="#34d399", on_click=open_search_dialog),
+                                    ft.IconButton(ft.Icons.SETTINGS, icon_color="#34d399", on_click=open_remote_settings_dlg),
+                                ],
+                                spacing=4,
                             ),
-                            status_banner,
-                            ft.Text(
-                                "Użyj strzałek ⬆️ ⬇️ na pilocie, aby wybrać pole. Naciśnij OK, aby edytować lub zmienić listę.",
-                                size=12,
-                                color="#94a3b8",
-                            ),
-                            btn_remote_id,
-                            btn_edit_srv,
-                            btn_edit_usr,
-                            btn_edit_pas,
-                            btn_edit_m3u,
-                            btn_submit_login,
-                            btn_saved_profiles_login,
-                            btn_toggle_autologin,
-                            btn_exit_app,
                         ],
-                        spacing=5,
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     ),
-                    bgcolor="#111625",
-                    padding=16,
-                    border_radius=12,
-                    width=580,
-                    border=ft.border.all(2, "#1e293b"),
-                )
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    ft.Column(
+                        [
+                            ft.Row([dash_tile_live, dash_tile_movies, dash_tile_series], spacing=12, expand=True),
+                            ft.Row([dash_tile_catchup, dash_tile_fav, dash_tile_playlists], spacing=12, height=85),
+                        ],
+                        spacing=12,
+                        expand=True,
+                    ),
+                    ft.Row(
+                        [
+                            ft.Column([footer_playlist_txt, footer_expire_txt], spacing=2),
+                            ft.Row(
+                                [
+                                    ft.IconButton(ft.Icons.REFRESH, icon_color="#34d399", on_click=refresh_current_list),
+                                    ft.IconButton(ft.Icons.POWER_SETTINGS_NEW, icon_color="#ef4444", on_click=close_app_cleanly),
+                                ],
+                                spacing=8,
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    ),
+                ],
+                expand=True,
+                spacing=15,
+            ),
             expand=True,
+            visible=False,
+            bgcolor="#0b1f15",
+            padding=20,
         )
+
+        left_panel = ft.Container(width=440, bgcolor="#0f291d", padding=10, border_radius=10, border=ft.border.all(1, "#22543d"))
+        right_panel = ft.Container(expand=True, bgcolor="#0f291d", padding=10, border_radius=10, border=ft.border.all(1, "#22543d"))
 
         left_panel.content = ft.Column(
             [
-                ft.Row(tab_buttons, spacing=4),
-                ft.Container(
-                    content=list_header_lbl,
-                    padding=ft.padding.symmetric(horizontal=6, vertical=4),
-                    bgcolor="#0f172a",
-                    border_radius=6,
+                ft.Row(
+                    [
+                        make_tv_button("🏠 Menu", open_dashboard, height=38, expand=True),
+                        make_tv_button("🔄 Odśwież", refresh_current_list, height=38, expand=True),
+                    ],
+                    spacing=6,
                 ),
+                ft.Container(content=list_header_lbl, padding=6, bgcolor="#091811", border_radius=6),
                 list_view,
             ],
             expand=True,
@@ -2750,71 +1372,456 @@ def main(page: ft.Page):
 
         right_panel.content = ft.Column(
             [
-                ft.Row(
-                    [
-                        header_dev_lbl,
-                        ft.Row([btn_change_list, btn_cloud_id, btn_logout, btn_quit_dash], spacing=6),
-                    ],
-                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                ),
+                ft.Row([header_dev_lbl, ft.Row([btn_home, btn_logout], spacing=6)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 video_placeholder,
                 now_playing_txt,
-                ft.Row(
-                    [
-                        btn_vlc,
-                        btn_only_pl,
-                        btn_refresh_cat,
-                        btn_search,
-                        btn_fav_toggle,
-                        btn_tmdb,
-                        btn_auto_vlc,
-                        btn_scheme_vlc,
-                    ],
-                    spacing=6,
-                    wrap=True,
-                ),
+                ft.Row(right_buttons, spacing=6, wrap=True),
             ],
             expand=True,
         )
 
-        dashboard_view.content = ft.Row(
-            [left_panel, right_panel], expand=True, spacing=10
+        dash_inner_view = ft.Container(
+            content=ft.Row([left_panel, right_panel], expand=True, spacing=10),
+            expand=True,
+            visible=False,
+            bgcolor="#0b1f15",
+            padding=10,
         )
-        page.add(login_view, dashboard_view)
-        update_focus_styles(full_refresh=True)
-        publish_status()
+
+        page.add(login_view, dash_view, dash_inner_view)
+
+        def style_single_list_btn(idx, is_focused, single_update=False):
+            if not (0 <= idx < len(list_item_buttons)):
+                return
+            b = list_item_buttons[idx]
+            base_t = b.data["base_text"]
+            if is_focused:
+                b.bgcolor = "#059669"
+                b.border = ft.border.all(3, "#fbbf24")
+                b.data["text_ctrl"].color = "#ffffff"
+                b.data["text_ctrl"].value = f"▶  {base_t}"
+            else:
+                b.bgcolor = "#163828"
+                b.border = ft.border.all(1, "#22543d")
+                b.data["text_ctrl"].color = "#cbd5e1"
+                b.data["text_ctrl"].value = base_t
+            if single_update:
+                try:
+                    b.update()
+                except Exception:
+                    pass
+
+        def scroll_list_to_focus():
+            if state["zone"] == "list" and 0 <= state["list_idx"] < len(list_item_buttons):
+                try:
+                    list_view.scroll_to(key=f"item_{state['list_idx']}", duration=120)
+                except Exception:
+                    pass
+                focused_btn = list_item_buttons[state["list_idx"]]
+                if focused_btn.data.get("item"):
+                    trigger_focus_preview(focused_btn.data["item"])
+
+        def update_focus_styles(full_refresh=False):
+            if login_view.visible:
+                for i, item in enumerate(login_items):
+                    is_foc = (state["zone"] == "login" and state["login_idx"] == i)
+                    item.bgcolor = "#fbbf24" if is_foc else "#163828"
+                    item.border = ft.border.all(3, "white" if is_foc else "#22543d")
+                    item.data["text_ctrl"].color = "black" if is_foc else "white"
+                safe_ui_update()
+                return
+
+            if dash_view.visible:
+                render_dashboard_focus()
+                return
+
+            if dash_inner_view.visible:
+                for i, b in enumerate(right_buttons):
+                    is_foc = (state["zone"] == "right" and state["right_idx"] == i)
+                    b.bgcolor = "#fbbf24" if is_foc else "#163828"
+                    b.border = ft.border.all(3, "white" if is_foc else "#22543d")
+                    b.data["text_ctrl"].color = "black" if is_foc else "white"
+
+                for i in range(len(list_item_buttons)):
+                    style_single_list_btn(i, state["zone"] == "list" and state["list_idx"] == i, single_update=False)
+                safe_ui_update()
+                scroll_list_to_focus()
+
+        def change_page(delta, jump_to_end=False):
+            total_len = len(state.get("filtered", []))
+            if total_len <= 0:
+                return
+            max_off = ((total_len - 1) // PAGE_SIZE) * PAGE_SIZE
+            new_off = max(0, min(state["page_offset"] + delta, max_off))
+            if new_off != state["page_offset"]:
+                state["page_offset"] = new_off
+                render_list(select_last=jump_to_end)
+
+        def render_list(select_last=False):
+            list_view.controls.clear()
+            list_item_buttons.clear()
+            list_item_actions.clear()
+            v_mode = state["view_mode"]
+            btn_idx = 0
+            pl_ids = get_current_pl_cat_ids()
+
+            if state["in_profiles"]:
+                list_header_lbl.value = "📋 ZAPISANE LISTY"
+                for idx, prof in enumerate(profiles):
+                    p_name = prof.get("name", f"Lista {idx + 1}")
+                    act_fn = lambda pr=prof: apply_profile(pr)
+                    b = make_tv_button(f"{idx + 1}. {p_name}", act_fn, key_str=f"item_{btn_idx}", height=44)
+                    list_item_buttons.append(b)
+                    list_item_actions.append(act_fn)
+                    list_view.controls.append(b)
+                    btn_idx += 1
+                state["list_idx"] = min(state["list_idx"], max(0, len(list_item_buttons) - 1))
+                update_focus_styles(full_refresh=True)
+                return
+
+            kind_lbl = {"live": "TV NA ŻYWO", "vod": "FILMY VOD", "series": "SERIALE"}[state["kind"]]
+            if v_mode == "categories":
+                raw = list(state["categories"].get(state["kind"], []))
+                # Filtr "Tylko Polskie" działa wyłącznie na nazwy kategorii
+                if state["only_pl"]:
+                    raw = [
+                        c for c in raw
+                        if str(c.get("category_id")) in ("__ALL__", "__RECENT__", "__CATCHUP__")
+                        or is_polish_text(c.get("category_name", ""))
+                    ]
+                list_header_lbl.value = f"📂 {kind_lbl} ({len(raw)})"
+            elif v_mode == "episodes":
+                raw = list(state["episodes"])
+                list_header_lbl.value = f"🎞 {state['active_series_title']} ({len(raw)})"
+            elif state["in_fav"]:
+                raw = list(favorites_items)
+                list_header_lbl.value = f"⭐ ULUBIONE ({len(raw)})"
+            else:
+                raw = list(state["streams"])
+                cat_nm = (state["active_cat"] or {}).get("category_name", "Lista")
+                list_header_lbl.value = f"📺 {cat_nm} ({len(raw)})"
+
+            q = state.get("search_query", "").strip().lower()
+            if q:
+                raw = [
+                    it for it in raw
+                    if q in (it.get("name") or it.get("title") or it.get("category_name") or "").lower()
+                ]
+
+            state["filtered"] = raw
+            total_items = len(raw)
+            start = state["page_offset"]
+            end = min(start + PAGE_SIZE, total_items)
+            slice_items = raw[start:end]
+
+            # Przyciski powrotu na górze listy
+            if v_mode == "episodes":
+                b_back = make_tv_button("↩ WRÓĆ DO SERIALI", back_to_streams, key_str=f"item_{btn_idx}", height=42)
+                list_item_buttons.append(b_back)
+                list_item_actions.append(back_to_streams)
+                list_view.controls.append(b_back)
+                btn_idx += 1
+            elif v_mode == "streams" and not state["in_fav"]:
+                b_back = make_tv_button("↩ WRÓĆ DO KATEGORII", back_to_cats, key_str=f"item_{btn_idx}", height=42)
+                list_item_buttons.append(b_back)
+                list_item_actions.append(back_to_cats)
+                list_view.controls.append(b_back)
+                btn_idx += 1
+
+            # Przycisk poprzedniej strony
+            if start > 0:
+                prev_fn = lambda: change_page(-PAGE_SIZE, jump_to_end=True)
+                b_prev = make_tv_button(f"⬆️ POPRZEDNIA STRONA ({start - PAGE_SIZE + 1}-{start})", prev_fn, key_str=f"item_{btn_idx}", height=42)
+                list_item_buttons.append(b_prev)
+                list_item_actions.append(prev_fn)
+                list_view.controls.append(b_prev)
+                btn_idx += 1
+
+            first_media_btn_idx = btn_idx
+
+            for local_i, item in enumerate(slice_items):
+                real_num = start + local_i + 1
+                if v_mode == "categories":
+                    cn = item.get("category_name", "")
+                    action_fn = lambda c=item: open_category(c)
+                    lbl = f"{real_num}. 📁 {cn}"
+                elif v_mode == "episodes":
+                    et = item.get("display_title") or item.get("title") or "Odcinek"
+                    action_fn = lambda ep=item: play_episode(ep)
+                    lbl = f"{real_num}. 🎞 {et}"
+                else:
+                    fav = "⭐ " if is_favorite(item) else ""
+                    pl = "🇵🇱 " if is_polish_item(item, pl_ids) else ""
+                    arch = "⏱ " if parse_int_safe(item.get("tv_archive"), 0) == 1 else ""
+                    nm = item.get("name") or item.get("title") or "Pozycja"
+                    action_fn = lambda it=item: on_stream_click(it)
+                    lbl = f"{real_num}. {fav}{pl}{arch}{nm}"
+
+                b = make_tv_button(lbl, action_fn, key_str=f"item_{btn_idx}", height=46, item_ref=item)
+                list_item_buttons.append(b)
+                list_item_actions.append(action_fn)
+                list_view.controls.append(b)
+                btn_idx += 1
+
+            last_media_btn_idx = btn_idx - 1
+
+            # Przycisk następnej strony
+            if end < total_items:
+                next_fn = lambda: change_page(PAGE_SIZE, jump_to_end=False)
+                b_next = make_tv_button(f"⬇️ NASTĘPNA STRONA ({end + 1}-{min(end + PAGE_SIZE, total_items)} z {total_items})", next_fn, key_str=f"item_{btn_idx}", height=42)
+                list_item_buttons.append(b_next)
+                list_item_actions.append(next_fn)
+                list_view.controls.append(b_next)
+                btn_idx += 1
+
+            if select_last and last_media_btn_idx >= first_media_btn_idx:
+                state["list_idx"] = last_media_btn_idx
+            elif slice_items:
+                state["list_idx"] = first_media_btn_idx
+            else:
+                state["list_idx"] = 0
+
+            update_focus_styles(full_refresh=True)
+
+        def back_to_streams():
+            state["view_mode"] = "streams"
+            state["page_offset"] = 0
+            render_list()
+
+        def back_to_cats():
+            state["view_mode"] = "categories"
+            state["active_cat"] = None
+            state["page_offset"] = 0
+            if not state["categories"].get(state["kind"]):
+                def _w():
+                    try:
+                        cats = state["client"].get_categories(state["kind"]) or []
+                        state["categories"][state["kind"]] = build_special_top_categories(state["kind"], cats)
+                        render_list()
+                    except Exception:
+                        pass
+                threading.Thread(target=_w, daemon=True).start()
+            else:
+                render_list()
+
+        def open_category(cat_obj):
+            state["view_mode"] = "streams"
+            state["active_cat"] = cat_obj
+            state["page_offset"] = 0
+            state["list_idx"] = 0
+            cat_id = str(cat_obj.get("category_id", "__ALL__"))
+            cache_key = (state["kind"], cat_id)
+
+            if cache_key in state["streams_cache"]:
+                state["streams"] = state["streams_cache"][cache_key]
+                render_list()
+                return
+
+            list_view.controls.clear()
+            list_header_lbl.value = f"⏳ Ładowanie: {cat_obj.get('category_name')}..."
+            safe_ui_update()
+
+            def _w():
+                try:
+                    items = state["client"].get_streams(state["kind"], cat_obj.get("category_id")) or []
+                    for it in items:
+                        it["kind"] = state["kind"]
+                    state["streams"] = items
+                    state["streams_cache"][cache_key] = items
+                    render_list()
+                except Exception:
+                    pass
+
+            threading.Thread(target=_w, daemon=True).start()
+
+        def play_episode(ep_item):
+            ext = ep_item.get("container_extension", "mp4") or "mp4"
+            url = state["client"].build_stream_url("series", ep_item.get("id"), ext, item=ep_item)
+            play_stream_url(url, ep_item.get("display_title") or "Odcinek", item=ep_item)
+
+        def on_stream_click(item):
+            k = item.get("kind") or state["kind"]
+            title = item.get("name") or item.get("title") or "Strumień"
+            uid = get_item_unique_id(item)
+            if k == "series":
+                state["active_series_id"] = uid
+                state["active_series_title"] = title
+                state["page_offset"] = 0
+                list_view.controls.clear()
+                list_header_lbl.value = f"⏳ Odcinki: {title}..."
+                safe_ui_update()
+
+                def _w():
+                    try:
+                        info = state["client"].get_series_info(item.get("series_id"))
+                        eps_map = info.get("episodes") or {}
+                        flat_eps = []
+                        for s_num in sorted(eps_map.keys(), key=lambda x: int(x) if str(x).isdigit() else 999):
+                            for ep in eps_map[s_num]:
+                                ep_copy = dict(ep)
+                                ep_copy["display_title"] = f"S{int(s_num):02d}E{int(ep.get('episode_num', 1)):02d} - {ep.get('title')}"
+                                flat_eps.append(ep_copy)
+                        state["episodes"] = flat_eps
+                        state["view_mode"] = "episodes"
+                        render_list()
+                    except Exception:
+                        back_to_streams()
+
+                threading.Thread(target=_w, daemon=True).start()
+                return
+            ext = item.get("container_extension", "ts" if k == "live" else "mp4") or ("ts" if k == "live" else "mp4")
+            url = state["client"].build_stream_url(k, item.get("stream_id"), ext, item=item)
+            play_stream_url(url, title, item=item)
+
+        def do_login(_e=None, is_auto=False):
+            if state["is_logging_in"]:
+                return
+            state["is_logging_in"] = True
+            status_banner.value = "⏳ Łączenie z serwerem Vivo..."
+            safe_ui_update()
+
+            def _w():
+                try:
+                    m3u = creds["m3u_url"].strip()
+                    srv = creds["server"].strip()
+                    usr = creds["username"].strip()
+                    pas = creds["password"]
+                    if m3u and (not usr or not pas):
+                        ext = extract_xtream_from_m3u_url(m3u)
+                        client = XtreamClient(*ext) if ext else M3UClient(m3u)
+                    else:
+                        client = XtreamClient(srv, usr, pas)
+                    u_info = client.login() or {}
+                    state["client"] = client
+                    exp_ts = parse_int_safe(u_info.get("exp_date"), 0)
+                    state["exp_date_str"] = (
+                        datetime.datetime.fromtimestamp(exp_ts).strftime("%Y-%m-%d")
+                        if exp_ts > 0
+                        else "Unlimited"
+                    )
+                    prof_name = register_or_update_profile(state.get("active_profile_name", ""), srv, usr, pas, m3u)
+                    state["active_profile_name"] = prof_name
+                    login_view.visible = False
+                    open_dashboard()
+                except Exception as ex:
+                    status_banner.value = f"❌ Błąd logowania: {ex}"
+                    safe_ui_update()
+                finally:
+                    state["is_logging_in"] = False
+
+            threading.Thread(target=_w, daemon=True).start()
+
+        def do_logout(_e=None):
+            state["client"] = None
+            dash_view.visible = False
+            dash_inner_view.visible = False
+            login_view.visible = True
+            state["zone"] = "login"
+            state["login_idx"] = 0
+            update_focus_styles()
+
+        def apply_profile(prof):
+            creds["server"] = prof.get("server", "")
+            creds["username"] = prof.get("username", "")
+            creds["password"] = prof.get("password", "")
+            creds["m3u_url"] = prof.get("m3u_url", "")
+            cache_set("server", creds["server"])
+            cache_set("username", creds["username"])
+            cache_set("password", creds["password"])
+            cache_set("m3u_url", creds["m3u_url"])
+            state["active_profile_name"] = prof.get("name", "")
+            do_login()
+
+        def handle_smart_back():
+            if state["view_mode"] == "episodes":
+                back_to_streams()
+            elif state["view_mode"] == "streams" and not state["in_fav"] and not state["in_profiles"]:
+                back_to_cats()
+            else:
+                open_dashboard()
+
+        def on_key_event(e: ft.KeyboardEvent):
+            if app_state["dialog_open"]:
+                return
+            key = e.key
+
+            if login_view.visible:
+                state["zone"] = "login"
+                if key == "Arrow Down" and state["login_idx"] < len(login_items) - 1:
+                    state["login_idx"] += 1
+                elif key == "Arrow Up" and state["login_idx"] > 0:
+                    state["login_idx"] -= 1
+                elif key in ("Enter", "Select", " "):
+                    login_items[state["login_idx"]].data["action"]()
+                update_focus_styles()
+                return
+
+            if dash_view.visible:
+                state["zone"] = "dashboard"
+                if key == "Arrow Right" and state["dash_idx"] < len(dash_tiles) - 1:
+                    state["dash_idx"] += 1
+                elif key == "Arrow Left" and state["dash_idx"] > 0:
+                    state["dash_idx"] -= 1
+                elif key == "Arrow Down" and state["dash_idx"] < 3:
+                    state["dash_idx"] = min(5, state["dash_idx"] + 3)
+                elif key == "Arrow Up" and state["dash_idx"] >= 3:
+                    state["dash_idx"] -= 3
+                elif key in ("Enter", "Select", " "):
+                    dash_tiles[state["dash_idx"]].data["action"]()
+                render_dashboard_focus()
+                return
+
+            if dash_inner_view.visible:
+                if key == "Arrow Right":
+                    if state["zone"] == "list":
+                        state["zone"] = "right"
+                        state["right_idx"] = 0
+                    elif state["zone"] == "right" and state["right_idx"] < len(right_buttons) - 1:
+                        state["right_idx"] += 1
+                elif key == "Arrow Left":
+                    if state["zone"] == "right":
+                        if state["right_idx"] > 0:
+                            state["right_idx"] -= 1
+                        else:
+                            state["zone"] = "list"
+                elif key == "Arrow Down":
+                    if state["zone"] == "list" and list_item_buttons:
+                        if state["list_idx"] < len(list_item_buttons) - 1:
+                            state["list_idx"] += 1
+                        elif state["page_offset"] + PAGE_SIZE < len(state.get("filtered", [])):
+                            change_page(PAGE_SIZE, jump_to_end=False)
+                            return
+                    elif state["zone"] == "right" and state["right_idx"] < len(right_buttons) - 1:
+                        state["right_idx"] += 1
+                elif key == "Arrow Up":
+                    if state["zone"] == "list" and list_item_buttons:
+                        if state["list_idx"] > 0:
+                            state["list_idx"] -= 1
+                        elif state["page_offset"] >= PAGE_SIZE:
+                            change_page(-PAGE_SIZE, jump_to_end=True)
+                            return
+                    elif state["zone"] == "right" and state["right_idx"] > 0:
+                        state["right_idx"] -= 1
+                elif key in ("Enter", "Select", " "):
+                    if state["zone"] == "list" and list_item_actions and 0 <= state["list_idx"] < len(list_item_actions):
+                        list_item_actions[state["list_idx"]]()
+                        return
+                    elif state["zone"] == "right":
+                        right_buttons[state["right_idx"]].data["action"]()
+                        return
+                elif key in ("Backspace", "Escape"):
+                    handle_smart_back()
+                    return
+                update_focus_styles()
+
+        page.on_keyboard_event = on_key_event
+        update_focus_styles()
 
         if state["auto_login"] and has_saved_credentials():
-            def _auto_boot_login():
-                if stop_event.wait(0.35):
-                    return
-                if login_view.visible and not state["client"]:
-                    do_login(is_auto=True)
-
-            threading.Thread(target=_auto_boot_login, daemon=True).start()
+            threading.Thread(target=lambda: (time.sleep(0.3), do_login(is_auto=True)), daemon=True).start()
 
     except Exception as e:
-        err_msg = traceback.format_exc()
-        page.add(
-            ft.Container(
-                content=ft.Column(
-                    [
-                        ft.Text(
-                            "⚠️ Błąd krytyczny podczas startu:",
-                            color="red",
-                            size=20,
-                            weight=ft.FontWeight.BOLD,
-                        ),
-                        ft.Text(str(e), color="yellow", size=16),
-                        ft.Text(err_msg, color="white", size=11),
-                    ],
-                    scroll=ft.ScrollMode.ALWAYS,
-                ),
-                padding=20,
-                bgcolor="#1e293b",
-                expand=True,
-            )
-        )
+        page.add(ft.Text(f"Błąd krytyczny: {e}", color="red", size=16))
         page.update()
 
 
