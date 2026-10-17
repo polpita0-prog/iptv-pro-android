@@ -1,19 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Client V5.3 PRO - ANDROID TV EDITION
-Nowości i poprawki w V5.3:
-1. MIKRO-ODŚWIEŻANIE KAFELKÓW (b.update()):
-   - Podczas ruchu góra/dół aktualizowane są wyłącznie 2 kontenery zamiast całego drzewa strony.
-2. WYSZUKIWARKA KANAŁÓW I FILMÓW (🔍 SZUKAJ):
-   - Filtrowanie bieżącej kategorii lub całej listy z poziomu pilota Android TV.
-3. PAMIĘĆ PODRĘCZNA KATEGORII (streams_cache):
-   - Błyskawiczny powrót do wcześniej otwartych kategorii bez ponownego odpytywania serwera.
-4. AUTOMATYCZNY PLAKAT I OPIS TMDB W PRAWYM PANELU:
-   - Podgląd okładki, oceny i fabuły po wybraniu filmu/serialu + poprawione okno dialogowe TMDB.
-5. OBSŁUGA PRZYCISKÓW CH+ / CH- (PageUp / PageDown) NA PILOCIE:
-   - Szybkie przeskakiwanie o 50 pozycji na liście.
-6. BEZPIECZNY ZAPIS (DEBOUNCED STORAGE WRITER):
-   - Eliminacja wyścigu wątków przy szybkim przełączaniu kanałów.
+IPTV Client V5.5 PRO - ANDROID TV EDITION
+Nowości w V5.5:
+1. PRZEŁĄCZNIK "🇵🇱 Tylko Polskie: WŁ./WYŁ." (ZAPISYWANY W PAMIĘCI APK):
+   - Gdy WŁ.: całkowicie ukrywa zagraniczne kategorie na liście kategorii oraz zagraniczne
+     kanały/filmy/seriale na listach zbiorczych (Wszystkie / Ostatnio dodane).
+   - Gdy WYŁ.: pokazuje pełną listę, ale polskie kategorie i kanały nadal trzyma na samej górze.
+2. INTELIGENTNE ROZPOZNAWANIE POLSKICH KATEGORII:
+   - Jeśli użytkownik otworzy polską kategorię (np. "PL: Kino Akcji"), wyświetlane są wszystkie
+     filmy należące do tej kategorii, nawet gdy pojedynczy film nie ma tagu "PL" w tytule.
+3. FILMY I SERIALE - OSTATNIO DODANE NA GÓRZE + PRZYCISK "🔄 ODŚWIEŻ NOWOŚCI".
 """
 
 import datetime
@@ -37,6 +33,103 @@ DEFAULT_HEADERS = {
     ),
     "Accept": "*/*",
 }
+
+# Wzorce rozpoznające polskie kategorie, kanały, filmy i seriale
+PL_REGEX = re.compile(
+    r"(?:^|[\s\|\[\(\-_:•/])(PL|POL|POLAND|POLSKA|POLSKIE|POLISH|LEKTOR|DUBBING|NAPISY[\s_]*PL|PL[\s_]*SUB|VIP[\s_]*PL)(?:$|[\s\|\]\)\-_:•/])"
+    r"|[ąćęłńóśźżĄĆĘŁŃÓŚŹŻ]"
+    r"|\b(tvp|polsat|tvn|canal\+|c\+|ale\s*kino|kino\s*polska|planete\+|domo\+|kuchnia\+|teletoon\+|minimini\+|ttv|puls|fokus\s*tv|eska|polo\s*tv|trwam|republika|wpolsce|wydarzenia\s*24|stopklatka|zoom\s*tv|wp\s*tv|nowa\s*tv|metro\s*tv|eleven\s*sports|polsat\s*sport|motowizja|stars\s*tv|kino\s*tv|gametoon|active\s*family|romance\s*tv|13\s*ulica|sci\s*fi|paramount|comedy\s*central|national\s*geographic|discovery|animal\s*planet|tlc|id\s*investigation|hbo|cinemax|filmbox|axn|fox|epic\s*drama|bbc\s*brit|bbc\s*earth|bbc\s*first|bbc\s*cbbc|bbc\s*lifestyle|viasat|history|crime\s*investigation|sundance|red\s*carpet|antena\s*hd|tv\s*okazje|super\s*polsat|tv4|tv6|polsat\s*news|tvn24|tvp\s*info|biznes24|news24|pogoda24|4fun|vox\s*music|disco\s*polo|power\s*tv|nuta\s*tv|mixtape|hip\s*hop\s*tv)\b",
+    re.IGNORECASE,
+)
+
+
+def is_polish_text(text: str) -> bool:
+    if not text:
+        return False
+    return bool(PL_REGEX.search(str(text)))
+
+
+def is_polish_item(item: dict, pl_cat_ids: set = None) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if pl_cat_ids and str(item.get("category_id", "")) in pl_cat_ids:
+        return True
+    fields = (
+        item.get("name"),
+        item.get("title"),
+        item.get("category_name"),
+        item.get("group"),
+    )
+    return any(is_polish_text(f) for f in fields if f)
+
+
+def parse_int_safe(val, default=0) -> int:
+    if val is None:
+        return default
+    try:
+        return int(float(str(val).strip()))
+    except Exception:
+        m = re.search(r"(\d+)$", str(val))
+        return int(m.group(1)) if m else default
+
+
+def get_added_timestamp(item: dict) -> int:
+    if not isinstance(item, dict):
+        return 0
+    return (
+        parse_int_safe(item.get("added"), 0)
+        or parse_int_safe(item.get("last_modified"), 0)
+        or parse_int_safe(item.get("releaseDate"), 0)
+    )
+
+
+def get_numeric_stream_id(item: dict) -> int:
+    if not isinstance(item, dict):
+        return 0
+    return (
+        parse_int_safe(item.get("stream_id"), 0)
+        or parse_int_safe(item.get("series_id"), 0)
+        or parse_int_safe(item.get("id"), 0)
+    )
+
+
+def sort_categories_pl_first(categories: list) -> list:
+    pl_cats = []
+    other_cats = []
+    for c in categories:
+        if is_polish_text(c.get("category_name", "")):
+            pl_cats.append(c)
+        else:
+            other_cats.append(c)
+    return pl_cats + other_cats
+
+
+def sort_streams_smart(
+    items: list,
+    kind: str,
+    force_newest_only: bool = False,
+    pl_cat_ids: set = None,
+) -> list:
+    if not items:
+        return []
+
+    if kind == "live" and not force_newest_only:
+        pl_list = []
+        other_list = []
+        for it in items:
+            if is_polish_item(it, pl_cat_ids):
+                pl_list.append(it)
+            else:
+                other_list.append(it)
+        return pl_list + other_list
+
+    def _vod_series_key(it):
+        pl_flag = 1 if is_polish_item(it, pl_cat_ids) else 0
+        added_ts = get_added_timestamp(it)
+        num_id = get_numeric_stream_id(it)
+        return (pl_flag, added_ts, num_id)
+
+    return sorted(items, key=_vod_series_key, reverse=True)
 
 
 def make_session():
@@ -129,6 +222,7 @@ class XtreamClient:
         self.password = password
         self.session = make_session()
         self.user_info = {}
+        self.pl_cat_ids = {"live": set(), "vod": set(), "series": set()}
 
     def _api(self, params, timeout=15):
         url = f"{self.server}/player_api.php"
@@ -151,7 +245,13 @@ class XtreamClient:
             "vod": "get_vod_categories",
             "series": "get_series_categories",
         }[kind]
-        return self._api({"action": action}) or []
+        raw_cats = self._api({"action": action}) or []
+        self.pl_cat_ids[kind] = {
+            str(c.get("category_id", ""))
+            for c in raw_cats
+            if is_polish_text(c.get("category_name", ""))
+        }
+        return sort_categories_pl_first(raw_cats)
 
     def get_streams(self, kind, category_id=None):
         action = {
@@ -160,9 +260,15 @@ class XtreamClient:
             "series": "get_series",
         }[kind]
         params = {"action": action}
-        if category_id and category_id != "__ALL__":
+        if category_id and category_id not in ("__ALL__", "__RECENT__"):
             params["category_id"] = category_id
-        return self._api(params, timeout=22) or []
+        raw_streams = self._api(params, timeout=24) or []
+        return sort_streams_smart(
+            raw_streams,
+            kind,
+            force_newest_only=(category_id == "__RECENT__"),
+            pl_cat_ids=self.pl_cat_ids.get(kind, set()),
+        )
 
     def get_series_info(self, series_id):
         return self._api({"action": "get_series_info", "series_id": series_id})
@@ -188,10 +294,16 @@ class M3UClient:
         self.session = make_session()
         self.categories = {"live": [], "vod": [], "series": []}
         self.streams_by_cat = {"live": {}, "vod": {}, "series": {}}
+        self.pl_cat_ids = {"live": set(), "vod": set(), "series": set()}
         self.series_map = {}
         self.direct_urls = {}
 
     def login(self):
+        self.categories = {"live": [], "vod": [], "series": []}
+        self.streams_by_cat = {"live": {}, "vod": {}, "series": {}}
+        self.pl_cat_ids = {"live": set(), "vod": set(), "series": set()}
+        self.series_map = {}
+        self.direct_urls = {}
         r = self.session.get(self.source, timeout=25)
         r.raise_for_status()
         r.encoding = r.apparent_encoding or "utf-8"
@@ -253,18 +365,24 @@ class M3UClient:
                 self.categories[kind].append(
                     {"category_id": cat_id, "category_name": group}
                 )
+                if is_polish_text(group):
+                    self.pl_cat_ids[kind].add(cat_id)
                 self.streams_by_cat[kind][cat_id] = []
             else:
                 cat_id = cat_sets[kind][group]
 
             item_id = f"m3u_item_{seq_id}"
+            cur_num = seq_id
             seq_id += 1
             self.direct_urls[item_id] = url
 
             if kind in ("live", "vod"):
                 self.streams_by_cat[kind][cat_id].append({
                     "stream_id": item_id,
+                    "category_id": cat_id,
+                    "added": str(cur_num),
                     "name": name,
+                    "group": group,
                     "stream_icon": logo,
                     "direct_url": url,
                     "kind": kind,
@@ -277,11 +395,14 @@ class M3UClient:
                 )
                 series_key = (cat_id, base_title.lower())
                 if series_key not in series_groups:
-                    series_id = f"m3u_ser_{seq_id}"
+                    series_id = f"m3u_ser_{cur_num}"
                     series_groups[series_key] = series_id
                     self.streams_by_cat["series"][cat_id].append({
                         "series_id": series_id,
+                        "category_id": cat_id,
+                        "last_modified": str(cur_num),
                         "name": base_title,
+                        "group": group,
                         "cover": logo,
                         "kind": "series",
                     })
@@ -299,17 +420,27 @@ class M3UClient:
                 })
             extinf_line = None
 
+        for k in ("live", "vod", "series"):
+            self.categories[k] = sort_categories_pl_first(self.categories[k])
+
     def get_categories(self, kind):
         return self.categories.get(kind, [])
 
     def get_streams(self, kind, category_id=None):
         cat_map = self.streams_by_cat.get(kind, {})
-        if not category_id or category_id == "__ALL__":
+        pl_ids = self.pl_cat_ids.get(kind, set())
+        if not category_id or category_id in ("__ALL__", "__RECENT__"):
             res = []
             for v in cat_map.values():
                 res.extend(v)
-            return res
-        return cat_map.get(category_id, [])
+            return sort_streams_smart(
+                res,
+                kind,
+                force_newest_only=(category_id == "__RECENT__"),
+                pl_cat_ids=pl_ids,
+            )
+        raw_list = cat_map.get(category_id, [])
+        return sort_streams_smart(raw_list, kind, pl_cat_ids=pl_ids)
 
     def get_series_info(self, series_id):
         return self.series_map.get(series_id, {"episodes": {}})
@@ -333,9 +464,26 @@ def get_item_unique_id(item):
     return str(val)
 
 
+def build_special_top_categories(kind: str, raw_cats: list) -> list:
+    top = [
+        {
+            "category_id": "__ALL__",
+            "category_name": "🔥 WSZYSTKIE (🇵🇱 Polskie na górze)",
+        }
+    ]
+    if kind in ("vod", "series"):
+        top.append(
+            {
+                "category_id": "__RECENT__",
+                "category_name": "🆕 OSTATNIO DODANE (NOWOŚCI NA GÓRZE)",
+            }
+        )
+    return top + raw_cats
+
+
 def main(page: ft.Page):
     try:
-        page.title = "IPTV V5.3 PRO Android TV"
+        page.title = "IPTV V5.5 PRO Android TV"
         page.theme_mode = ft.ThemeMode.DARK
         page.bgcolor = "#0b0e17"
         page.padding = 10
@@ -355,6 +503,7 @@ def main(page: ft.Page):
                 "processed_ids": [],
                 "auto_vlc": True,
                 "auto_login": True,
+                "only_pl": False,
                 "vlc_mode": "vlc_clean",
                 "favorites_v2": [],
                 "server": "http://",
@@ -377,7 +526,6 @@ def main(page: ft.Page):
             val = storage_cache.get(key)
             return val if val is not None else default
 
-        # Zoptymalizowany zapis z buforowaniem (eliminuje wyścig wątków przy szybkim klikaniu)
         def cache_set(key, val):
             storage_cache[key] = val
             with storage_lock:
@@ -448,6 +596,7 @@ def main(page: ft.Page):
         processed_ids = set(cache_get("processed_ids", []))
         auto_vlc_saved = cache_get("auto_vlc", True)
         auto_login_saved = cache_get("auto_login", True)
+        only_pl_saved = cache_get("only_pl", False)
         saved_vlc_mode = cache_get("vlc_mode", "vlc_clean")
         favorites_items = list(cache_get("favorites_v2", []))
 
@@ -547,6 +696,7 @@ def main(page: ft.Page):
             "episodes": [],
             "filtered": [],
             "search_query": "",
+            "only_pl": bool(only_pl_saved),
             "now_playing": "Brak aktywnego strumienia",
             "playing_url": "",
             "current_item": None,
@@ -571,6 +721,31 @@ def main(page: ft.Page):
         }
 
         PAGE_SIZE = 50
+
+        def get_current_pl_cat_ids() -> set:
+            cl = state.get("client")
+            if cl and hasattr(cl, "pl_cat_ids"):
+                return cl.pl_cat_ids.get(state["kind"], set())
+            return set()
+
+        # =====================================================================
+        # PRZEŁĄCZNIK: 🇵🇱 TYLKO POLSKIE (UKRYWANIE ZAGRANICZNYCH KANAŁÓW I GRUP)
+        # =====================================================================
+        def toggle_only_pl(_e=None):
+            state["only_pl"] = not state["only_pl"]
+            cache_set("only_pl", state["only_pl"])
+            set_tv_button_text(
+                btn_only_pl,
+                f"🇵🇱 Tylko Polskie: {'WŁ.' if state['only_pl'] else 'WYŁ.'}",
+            )
+            state["page_offset"] = 0
+            state["list_idx"] = 0
+            now_playing_txt.value = (
+                "🇵🇱 Filtr 'Tylko Polskie' WŁĄCZONY — zagraniczne kategorie i kanały zostały ukryte."
+                if state["only_pl"]
+                else "🌍 Filtr 'Tylko Polskie' WYŁĄCZONY — widoczne wszystkie kanały (Polskie na górze)."
+            )
+            render_list()
 
         # =====================================================================
         # SZYBKA OBSŁUGA ULUBIONYCH
@@ -599,7 +774,7 @@ def main(page: ft.Page):
             else:
                 item_copy = dict(cur_item)
                 item_copy["kind"] = cur_item.get("kind") or state["kind"]
-                favorites_items.append(item_copy)
+                favorites_items.insert(0, item_copy)
                 now_playing_txt.value = f"⭐ Dodano do ulubionych: {cur_item.get('name') or cur_item.get('title')}"
 
             cache_set("favorites_v2", favorites_items)
@@ -729,6 +904,7 @@ def main(page: ft.Page):
                         "state_label": st_lbl,
                         "now_playing": state["now_playing"],
                         "active_server": srv_txt,
+                        "only_pl": state["only_pl"],
                         "current_tab": (
                             "listy" if state["in_profiles"] else ("ulubione" if state["in_fav"] else state["kind"])
                         ),
@@ -762,7 +938,7 @@ def main(page: ft.Page):
             text_align=ft.TextAlign.CENTER,
         )
         status_info_sub = ft.Text(
-            "Użyj strzałek ⬆️ ⬇️ na pilocie oraz przycisku OK.\nPrzyciski CH+/CH- (PgUp/PgDn) przewijają listę o 50 pozycji.",
+            "🇵🇱 Polskie kanały oraz ostatnio dodane Filmy/Seriale są zawsze ustawiane na górze.\nUżyj przycisku '🇵🇱 Tylko Polskie', aby całkowicie ukryć zagraniczne pozycje.",
             size=13,
             color="#94a3b8",
             text_align=ft.TextAlign.CENTER,
@@ -993,7 +1169,6 @@ def main(page: ft.Page):
             dlg.open = True
             safe_ui_update()
 
-        # Wyszukiwarka kanałów / filmów obsługiwana z pilota
         def open_search_dialog(_e=None):
             app_state["dialog_open"] = True
             search_in = ft.TextField(
@@ -1283,13 +1458,66 @@ def main(page: ft.Page):
 
             threading.Thread(target=_w, daemon=True).start()
 
-        def refresh_current_category(_e=None):
+        # =====================================================================
+        # ODŚWIEŻANIE LISTY Z USTAWIENIEM NOWOŚCI I KANAŁÓW PL NA GÓRZE
+        # =====================================================================
+        def refresh_current_list(_e=None):
+            if not state["client"]:
+                return
+
             state["streams_cache"].clear()
-            if state["view_mode"] == "streams" and state.get("active_cat"):
-                open_category(state["active_cat"], force_reload=True)
-            else:
-                state["categories"] = {"live": [], "vod": [], "series": []}
-                back_to_cats()
+            state["categories"] = {"live": [], "vod": [], "series": []}
+            state["search_query"] = ""
+            set_tv_button_text(btn_search, "🔍 Szukaj")
+
+            now_playing_txt.value = "🔄 Odświeżanie listy z serwera (🇵🇱 PL i 🆕 Nowości na górze)..."
+            list_header_lbl.value = "⏳ Pobieranie najnowszych pozycji z serwera..."
+            list_view.controls.clear()
+            safe_ui_update()
+
+            def _reload_worker():
+                try:
+                    if isinstance(state["client"], M3UClient):
+                        state["client"].login()
+
+                    cur_kind = state["kind"]
+                    raw_cats = state["client"].get_categories(cur_kind) or []
+                    state["categories"][cur_kind] = build_special_top_categories(cur_kind, raw_cats)
+
+                    if state["view_mode"] in ("streams", "episodes") and state.get("active_cat") and not state["in_fav"] and not state["in_profiles"]:
+                        act_cat = state["active_cat"]
+                        items = state["client"].get_streams(cur_kind, act_cat.get("category_id")) or []
+                        for it in items:
+                            it["kind"] = cur_kind
+                        cat_id = str(act_cat.get("category_id", "__ALL__"))
+                        state["streams_cache"][(cur_kind, cat_id)] = items
+                        state["streams"] = items
+                        state["view_mode"] = "streams"
+                        state["page_offset"] = 0
+                        state["list_idx"] = 1 if items else 0
+                        state["zone"] = "list"
+                        now_playing_txt.value = f"✅ Odświeżono! Nowości i polskie pozycje są na górze ({len(items)} poz.)."
+                        render_list()
+                    else:
+                        if cur_kind in ("vod", "series") and not state["in_fav"] and not state["in_profiles"]:
+                            recent_cat = {
+                                "category_id": "__RECENT__",
+                                "category_name": "🆕 OSTATNIO DODANE (NOWOŚCI NA GÓRZE)",
+                            }
+                            now_playing_txt.value = "✅ Odświeżono! Najnowsze filmy/seriale ustawiono na górze listy."
+                            open_category(recent_cat, force_reload=True)
+                        else:
+                            state["view_mode"] = "categories"
+                            state["page_offset"] = 0
+                            state["list_idx"] = 0
+                            state["zone"] = "list"
+                            now_playing_txt.value = "✅ Odświeżono listę kategorii (🇵🇱 Polskie na górze)."
+                            render_list()
+                except Exception as ex:
+                    now_playing_txt.value = f"❌ Błąd odświeżania: {ex}"
+                    safe_ui_update()
+
+            threading.Thread(target=_reload_worker, daemon=True).start()
 
         # Zakładki u góry
         btn_tab_live = make_tv_button("📺 TV", lambda: switch_tab("live", 0), height=42, expand=True)
@@ -1300,6 +1528,15 @@ def main(page: ft.Page):
         tab_buttons = [btn_tab_live, btn_tab_vod, btn_tab_ser, btn_tab_fav, btn_tab_prof]
 
         btn_vlc = make_tv_button("🚀 Otwórz w VLC", open_in_android_vlc, height=42)
+        btn_only_pl = make_tv_button(
+            f"🇵🇱 Tylko Polskie: {'WŁ.' if state['only_pl'] else 'WYŁ.'}",
+            toggle_only_pl,
+            height=42,
+        )
+        btn_refresh_cat = make_tv_button("🔄 Odśwież Nowości", refresh_current_list, height=42)
+        btn_search = make_tv_button("🔍 Szukaj", open_search_dialog, height=42)
+        btn_fav_toggle = make_tv_button("⭐ Dodaj do ulubionych", toggle_favorite, height=42)
+        btn_tmdb = make_tv_button("ℹ Opis TMDB", show_info_dialog, height=42)
         btn_auto_vlc = make_tv_button(
             f"Auto-start: {'WŁ.' if state['auto_vlc'] else 'WYŁ.'}",
             toggle_auto_vlc,
@@ -1310,10 +1547,6 @@ def main(page: ft.Page):
             toggle_vlc_scheme,
             height=42,
         )
-        btn_fav_toggle = make_tv_button("⭐ Dodaj do ulubionych", toggle_favorite, height=42)
-        btn_search = make_tv_button("🔍 Szukaj", open_search_dialog, height=42)
-        btn_tmdb = make_tv_button("ℹ Opis TMDB", show_info_dialog, height=42)
-        btn_refresh_cat = make_tv_button("🔄 Odśwież", refresh_current_category, height=42)
         btn_change_list = make_tv_button("📋 Zmień listę", lambda: switch_tab("profiles", 4), height=42)
         btn_cloud_id = make_tv_button("🌐 Kod ID", open_remote_settings_dlg, height=42)
         btn_logout = make_tv_button("⇄ Logowanie", lambda: do_logout(), height=42)
@@ -1321,12 +1554,13 @@ def main(page: ft.Page):
 
         right_buttons = [
             btn_vlc,
+            btn_only_pl,
+            btn_refresh_cat,
+            btn_search,
+            btn_fav_toggle,
+            btn_tmdb,
             btn_auto_vlc,
             btn_scheme_vlc,
-            btn_fav_toggle,
-            btn_search,
-            btn_tmdb,
-            btn_refresh_cat,
             btn_change_list,
             btn_cloud_id,
             btn_logout,
@@ -1409,7 +1643,6 @@ def main(page: ft.Page):
             if not dashboard_view.visible:
                 return
 
-            # Szybka ścieżka: aktualizacja wyłącznie 2 zmienionych kontenerów bez page.update()
             if (
                 not full_refresh
                 and state["zone"] == "list"
@@ -1472,7 +1705,12 @@ def main(page: ft.Page):
                     b.data["text_ctrl"].color = "black"
                     b.data["text_ctrl"].value = f"▶ {base_t}"
                 else:
-                    b.bgcolor = "#1e293b"
+                    if b == btn_refresh_cat:
+                        b.bgcolor = "#0d9488"
+                    elif b == btn_only_pl and state["only_pl"]:
+                        b.bgcolor = "#15803d"
+                    else:
+                        b.bgcolor = "#1e293b"
                     b.border = ft.border.all(1, "#334155")
                     b.data["text_ctrl"].color = "white"
                     b.data["text_ctrl"].value = base_t
@@ -1514,6 +1752,7 @@ def main(page: ft.Page):
 
             v_mode = state["view_mode"]
             btn_idx = 0
+            pl_ids = get_current_pl_cat_ids()
 
             # WIDOK 1: MENEDŻER ZAPISANYCH LIST
             if state["in_profiles"] or v_mode == "profiles":
@@ -1560,24 +1799,52 @@ def main(page: ft.Page):
                 return
 
             # WIDOK 2: KATEGORIE / KANAŁY / ODCINKI / ULUBIONE
+            only_pl_tag = " [🇵🇱 TYLKO PL]" if state["only_pl"] else ""
             if state["in_fav"]:
-                kind_lbl = "⭐ ULUBIONE"
+                kind_lbl = f"⭐ ULUBIONE{only_pl_tag}"
             else:
-                kind_lbl = {"live": "TV NA ŻYWO", "vod": "FILMY (VOD)", "series": "SERIALE"}[state["kind"]]
+                kind_lbl = {
+                    "live": f"TV NA ŻYWO{only_pl_tag}",
+                    "vod": f"FILMY (🆕 Nowości){only_pl_tag}",
+                    "series": f"SERIALE (🆕 Nowości){only_pl_tag}",
+                }[state["kind"]]
 
             if v_mode == "categories":
-                raw = state["categories"].get(state["kind"], [])
-                hdr_base = f"📂 KATEGORIE: {kind_lbl}"
+                raw = list(state["categories"].get(state["kind"], []))
+                if state["only_pl"]:
+                    filtered_cats = [
+                        c for c in raw
+                        if str(c.get("category_id", "")) in ("__ALL__", "__RECENT__")
+                        or is_polish_text(c.get("category_name", ""))
+                    ]
+                    # Jeśli lista nie ma oznaczonych tagiem PL kategorii, nie zostawiaj pustej listy
+                    if len(filtered_cats) > (2 if state["kind"] in ("vod", "series") else 1):
+                        raw = filtered_cats
+                hdr_base = f"📂 {kind_lbl}"
             elif v_mode == "episodes":
-                raw = state["episodes"]
+                raw = list(state["episodes"])
                 hdr_base = f"🎞 {state['active_series_title']}"
             elif state["in_fav"]:
-                raw = favorites_items
-                hdr_base = "⭐ ULUBIONE POZYCJE"
+                raw = list(favorites_items)
+                if state["only_pl"]:
+                    raw = [it for it in raw if is_polish_item(it, pl_ids)]
+                hdr_base = f"⭐ ULUBIONE POZYCJE{only_pl_tag}"
             else:
-                raw = state["streams"]
-                cat_nm = (state["active_cat"] or {}).get("category_name", "Lista")
-                hdr_base = f"📺 {cat_nm}"
+                raw = list(state["streams"])
+                act_cat = state.get("active_cat") or {}
+                cat_nm = act_cat.get("category_name", "Lista")
+                cat_id_str = str(act_cat.get("category_id", ""))
+                cat_is_pl = (
+                    cat_id_str not in ("__ALL__", "__RECENT__")
+                    and (cat_id_str in pl_ids or is_polish_text(cat_nm))
+                )
+                # Gdy włączony jest filtr 'Tylko Polskie', a jesteśmy w kategorii ogólnej (Wszystkie / Ostatnio dodane)
+                # lub zagranicznej, filtrujemy pojedyncze pozycje do wyłącznie polskich.
+                if state["only_pl"] and not cat_is_pl:
+                    only_pl_streams = [it for it in raw if is_polish_item(it, pl_ids)]
+                    if only_pl_streams:
+                        raw = only_pl_streams
+                hdr_base = f"📺 {cat_nm}{only_pl_tag}"
 
             q = state.get("search_query", "").strip().lower()
             if q:
@@ -1659,8 +1926,10 @@ def main(page: ft.Page):
                 real_num = start + local_i + 1
                 if v_mode == "categories":
                     cat_name = item.get("category_name", "Kategoria")
+                    cat_id_str = str(item.get("category_id", ""))
+                    pl_tag = "🇵🇱 " if (cat_id_str not in ("__ALL__", "__RECENT__") and is_polish_text(cat_name)) else ""
                     action_fn = lambda c=item: open_category(c)
-                    label = f"{real_num}. 📁 [KATEGORIA] {cat_name}"
+                    label = f"{real_num}. 📁 {pl_tag}{cat_name}"
                 elif v_mode == "episodes":
                     ep_title = item.get("display_title") or item.get("title") or "Odcinek"
                     action_fn = lambda ep=item: play_episode(ep)
@@ -1668,6 +1937,7 @@ def main(page: ft.Page):
                 else:
                     k = item.get("kind") or state["kind"]
                     fav_icon = "⭐ " if is_favorite(item) else ""
+                    pl_icon = "🇵🇱 " if is_polish_item(item, pl_ids) else ""
                     badge = (
                         "[TV]"
                         if k == "live"
@@ -1675,7 +1945,7 @@ def main(page: ft.Page):
                     )
                     nm = item.get("name") or item.get("title") or "Pozycja"
                     action_fn = lambda it=item: on_stream_click(it)
-                    label = f"{real_num}. {fav_icon}{badge} {nm}"
+                    label = f"{real_num}. {fav_icon}{pl_icon}{badge} {nm}"
 
                 b_item = make_tv_button(
                     label,
@@ -1731,6 +2001,15 @@ def main(page: ft.Page):
 
             def _apply_cats_cursor():
                 cats_list = state["categories"].get(state["kind"], [])
+                if state["only_pl"]:
+                    filtered_c = [
+                        c for c in cats_list
+                        if str(c.get("category_id", "")) in ("__ALL__", "__RECENT__")
+                        or is_polish_text(c.get("category_name", ""))
+                    ]
+                    if len(filtered_c) > (2 if state["kind"] in ("vod", "series") else 1):
+                        cats_list = filtered_c
+
                 if prev_cat_id or prev_cat_nm:
                     p_off, l_idx, _ = calc_cursor_for_item(
                         cats_list, prev_cat_id, prev_cat_nm, has_back_btn=False
@@ -1743,18 +2022,15 @@ def main(page: ft.Page):
                 render_list()
 
             if not state["categories"].get(state["kind"]):
-                list_header_lbl.value = "⏳ Pobieranie kategorii..."
+                list_header_lbl.value = "⏳ Pobieranie kategorii (🇵🇱 Polskie na górze)..."
                 safe_ui_update()
 
                 def _w():
                     try:
                         cats = state["client"].get_categories(state["kind"]) or []
-                        state["categories"][state["kind"]] = [
-                            {
-                                "category_id": "__ALL__",
-                                "category_name": "🔥 WSZYSTKIE POZYCJE",
-                            }
-                        ] + cats
+                        state["categories"][state["kind"]] = build_special_top_categories(
+                            state["kind"], cats
+                        )
                         _apply_cats_cursor()
                     except Exception:
                         pass
@@ -1774,7 +2050,6 @@ def main(page: ft.Page):
             cat_id = str(cat_obj.get("category_id", "__ALL__"))
             cache_key = (state["kind"], cat_id)
 
-            # Natychmiastowy odczyt z pamięci RAM, jeśli kategoria była już otwierana
             if not force_reload and cache_key in state["streams_cache"]:
                 items = state["streams_cache"][cache_key]
                 state["streams"] = items
@@ -1791,7 +2066,7 @@ def main(page: ft.Page):
                 return
 
             list_view.controls.clear()
-            list_header_lbl.value = f"⏳ Ładowanie: {cat_obj.get('category_name', '')}..."
+            list_header_lbl.value = f"⏳ Ładowanie i sortowanie: {cat_obj.get('category_name', '')}..."
             safe_ui_update()
 
             def _w():
@@ -1965,12 +2240,7 @@ def main(page: ft.Page):
             def _w():
                 try:
                     cats = state["client"].get_categories(saved_kind) or []
-                    all_cats = [
-                        {
-                            "category_id": "__ALL__",
-                            "category_name": "🔥 WSZYSTKIE POZYCJE",
-                        }
-                    ] + cats
+                    all_cats = build_special_top_categories(saved_kind, cats)
                     state["categories"][saved_kind] = all_cats
 
                     target_cat = None
@@ -2321,6 +2591,9 @@ def main(page: ft.Page):
                 "vol_down",
                 "logout",
                 "refresh",
+                "reload_list",
+                "only_pl",
+                "toggle_only_pl",
                 "ping",
                 "status",
             ):
@@ -2342,6 +2615,10 @@ def main(page: ft.Page):
                 publish_status()
             elif act == "logout":
                 do_logout()
+            elif act in ("reload_list", "refresh_list"):
+                refresh_current_list()
+            elif act in ("only_pl", "toggle_only_pl"):
+                toggle_only_pl()
             elif act in ("refresh", "ping", "status", "get_status"):
                 publish_status()
 
@@ -2392,7 +2669,7 @@ def main(page: ft.Page):
                     content=ft.Column(
                         [
                             ft.Text(
-                                "▶ IPTV V5.3 PRO ANDROID TV",
+                                "▶ IPTV V5.5 PRO ANDROID TV",
                                 size=20,
                                 weight=ft.FontWeight.BOLD,
                                 color="#38bdf8",
@@ -2456,12 +2733,13 @@ def main(page: ft.Page):
                 ft.Row(
                     [
                         btn_vlc,
+                        btn_only_pl,
+                        btn_refresh_cat,
+                        btn_search,
+                        btn_fav_toggle,
+                        btn_tmdb,
                         btn_auto_vlc,
                         btn_scheme_vlc,
-                        btn_fav_toggle,
-                        btn_search,
-                        btn_tmdb,
-                        btn_refresh_cat,
                     ],
                     spacing=6,
                     wrap=True,
