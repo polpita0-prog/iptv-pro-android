@@ -1,14 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Client V6.5 PRO - VIVO TV EDITION (Android TV)
-Pełny pakiet ulepszeń z poprawioną kompatybilnością ikon dla systemów Android.
+IPTV Client V6.6 PRO - VIVO TV EDITION (Android TV)
+Naprawiono i połączono wszystkie moduły:
+1. PEŁNA OBSŁUGA ZDALNEGO POŁĄCZENIA (CLOUD NTFY.SH):
+   - Przywrócono wątek nasłuchujący (cloud_listener), wysyłanie statusu (publish_status)
+     oraz zdalne wgrywanie/przełączanie list i sterowanie z panelu PC/WWW.
+2. INTERFEJS VIVO PLAYER + ZAAWANSOWANY BUFOR RAM (KATEGORIE I STRUMIENIE).
+3. PODGLĄD EPG NA ŻYWO ORAZ OPISÓW/PLAKATÓW TMDB PO NAJECHANIU KURSOREM.
+4. PRIORYTET POLSKICH KANAŁÓW I NOWOŚCI NA GÓRZE LISTY.
 """
 
 import base64
 import datetime
+import json
 import re
 import threading
 import time
+import traceback
 from urllib.parse import parse_qs, urlparse
 import uuid
 
@@ -528,13 +536,13 @@ def build_special_top_categories(kind: str, raw_cats: list) -> list:
 
 def main(page: ft.Page):
     try:
-        page.title = "IPTV V6.5 PRO - VIVO TV EDITION"
+        page.title = "IPTV V6.6 PRO - VIVO TV EDITION"
         page.theme_mode = ft.ThemeMode.DARK
         page.bgcolor = "#0b1f15"
         page.padding = 0
 
         stop_event = threading.Event()
-        app_state = {"dialog_open": False, "preview_seq": 0}
+        app_state = {"dialog_open": False, "paused_in_bg": False, "preview_seq": 0}
         storage_lock = threading.Lock()
         storage_cache = {}
         pending_writes = {}
@@ -545,6 +553,7 @@ def main(page: ft.Page):
                 "device_id": "",
                 "device_name": "Android TV Box",
                 "profiles": [],
+                "processed_ids": [],
                 "auto_vlc": True,
                 "auto_login": True,
                 "only_pl": False,
@@ -616,6 +625,20 @@ def main(page: ft.Page):
             except Exception:
                 pass
 
+        def on_lifecycle_change(e: ft.AppLifecycleStateChangeEvent):
+            st_str = str(e.data).lower()
+            if "detach" in st_str:
+                stop_event.set()
+            elif "pause" in st_str or "inactive" in st_str or "hidden" in st_str:
+                app_state["paused_in_bg"] = True
+            elif "resume" in st_str:
+                app_state["paused_in_bg"] = False
+                safe_ui_update()
+
+        page.on_app_lifecycle_state_change = on_lifecycle_change
+        page.on_disconnect = lambda _: stop_event.set()
+        page.on_close = lambda _: stop_event.set()
+
         device_id = cache_get("device_id")
         if not device_id:
             device_id = f"android-{uuid.uuid4().hex[:6]}"
@@ -623,6 +646,7 @@ def main(page: ft.Page):
 
         device_name = cache_get("device_name", "Android TV Box")
         profiles = list(cache_get("profiles", []))
+        processed_ids = set(cache_get("processed_ids", []))
         auto_vlc_saved = cache_get("auto_vlc", True)
         auto_login_saved = cache_get("auto_login", True)
         only_pl_saved = cache_get("only_pl", False)
@@ -723,6 +747,7 @@ def main(page: ft.Page):
             "active_profile_name": cache_get("active_profile_name", ""),
             "exp_date_str": "Unlimited",
             "categories": {"live": [], "vod": [], "series": []},
+            "categories_cache": {"live": None, "vod": None, "series": None},
             "streams_cache": {},
             "streams": [],
             "episodes": [],
@@ -733,6 +758,9 @@ def main(page: ft.Page):
             "playing_url": "",
             "current_item": None,
             "is_playing": False,
+            "paused": False,
+            "volume": 100,
+            "muted": False,
             "auto_vlc": bool(auto_vlc_saved),
             "auto_login": bool(auto_login_saved),
             "is_logging_in": False,
@@ -741,11 +769,75 @@ def main(page: ft.Page):
             "dash_idx": 0,
             "list_idx": 0,
             "right_idx": 0,
-            "login_idx": 4 if has_saved_credentials() else 0,
+            "login_idx": 5 if has_saved_credentials() else 1,
             "page_offset": 0,
         }
 
         PAGE_SIZE = 50
+
+        # =====================================================================
+        # RAPORTOWANIE STATUSU DO CHMURY (NTFY.SH)
+        # =====================================================================
+        def publish_status():
+            if stop_event.is_set() or app_state["paused_in_bg"]:
+                return
+
+            def _worker():
+                try:
+                    local_session = make_session()
+                    clean_id = re.sub(r"[^a-zA-Z0-9_-]", "", cache_get("device_id", device_id))
+                    status_topic = f"iptv_v4_pro_{clean_id}_status"
+                    if state["is_playing"]:
+                        st_lbl = "⏸ PAUZA" if state["paused"] else "▶ ODTWARZANIE"
+                    else:
+                        st_lbl = "⏹ ZATRZYMANO"
+
+                    srv_txt = (
+                        state["active_profile_name"]
+                        if state["client"]
+                        else "Ekran logowania"
+                    )
+                    prof_summary = []
+                    for p in profiles:
+                        prof_summary.append({
+                            "name": p.get("name", "Lista"),
+                            "mode": p.get("mode", "xtream"),
+                            "host": (p.get("server") or p.get("m3u_url") or "")[:30],
+                            "added_at": p.get("added_at", ""),
+                            "active": (
+                                state["client"] is not None
+                                and p.get("name") == state["active_profile_name"]
+                            ),
+                        })
+
+                    snapshot = {
+                        "type": "player_status",
+                        "device_name": cache_get("device_name", device_name),
+                        "device_id": clean_id,
+                        "ts": int(time.time() * 1000),
+                        "time_str": datetime.datetime.now().strftime("%H:%M:%S"),
+                        "state_label": st_lbl,
+                        "now_playing": state["now_playing"],
+                        "active_server": srv_txt,
+                        "only_pl": state["only_pl"],
+                        "current_tab": (
+                            "menu"
+                            if state["in_dashboard"]
+                            else ("listy" if state["in_profiles"] else ("ulubione" if state["in_fav"] else state["kind"]))
+                        ),
+                        "volume": state["volume"],
+                        "muted": state["muted"],
+                        "profiles": prof_summary,
+                    }
+                    local_session.post(
+                        f"https://ntfy.sh/{status_topic}",
+                        data=json.dumps(snapshot, ensure_ascii=False).encode("utf-8"),
+                        timeout=4,
+                    )
+                except Exception:
+                    pass
+
+            threading.Thread(target=_worker, daemon=True).start()
 
         def get_current_pl_cat_ids() -> set:
             cl = state.get("client")
@@ -789,16 +881,18 @@ def main(page: ft.Page):
         def toggle_only_pl(_e=None):
             state["only_pl"] = not state["only_pl"]
             cache_set("only_pl", state["only_pl"])
+            state["categories_cache"] = {"live": None, "vod": None, "series": None}
             set_tv_button_text(
                 btn_only_pl,
-                f"🇵🇱 Kat. PL: {'WŁ.' if state['only_pl'] else 'WYŁ.'}",
+                f"🇵🇱 Tylko PL: {'WŁ.' if state['only_pl'] else 'WYŁ.'}",
             )
-            if state["view_mode"] == "categories":
-                state["page_offset"] = 0
-                state["list_idx"] = 0
+            state["page_offset"] = 0
+            state["list_idx"] = 0
+            if not state["in_dashboard"]:
                 render_list()
             else:
                 safe_ui_update()
+            publish_status()
 
         def cycle_vlc_mode(_e=None):
             cur = state.get("vlc_mode", "vlc_clean")
@@ -837,15 +931,28 @@ def main(page: ft.Page):
             )
             render_list()
 
+        def delete_saved_profile(prof_name):
+            nonlocal profiles
+            profiles = [p for p in profiles if p.get("name") != prof_name]
+            cache_set("profiles", profiles)
+            refresh_login_button_labels()
+            now_playing_txt.value = f"🗑 Usunięto listę: {prof_name}"
+            if state["in_profiles"]:
+                render_list()
+            else:
+                safe_ui_update()
+            publish_status()
+
         # Widgety zegara i stopki Vivo
         clock_txt = ft.Text("00:00", size=32, weight=ft.FontWeight.BOLD, color="white")
         date_txt = ft.Text("Saturday, 17 Oct 2026", size=13, color="#86efac")
         footer_playlist_txt = ft.Text("Current Playlist: Brak", size=12, color="#86efac")
-        footer_expire_txt = ft.Text("Playlist Expire Date: Unlimited", size=12, color="#86efac")
+        footer_expire_txt = ft.Text(f"Playlist Expire Date: Unlimited  •  ID: {device_id}", size=12, color="#86efac")
 
         def update_vivo_footer():
+            cur_id = cache_get("device_id", device_id)
             footer_playlist_txt.value = f"Current Playlist: {state.get('active_profile_name') or 'Domyślna'}"
-            footer_expire_txt.value = f"Playlist Expire Date: {state.get('exp_date_str') or 'Unlimited'}"
+            footer_expire_txt.value = f"Playlist Expire Date: {state.get('exp_date_str') or 'Unlimited'}  •  Cloud ID: {cur_id}"
 
         def update_clock_loop():
             while not stop_event.is_set():
@@ -856,7 +963,8 @@ def main(page: ft.Page):
                     safe_ui_update()
                 except Exception:
                     pass
-                time.sleep(10)
+                if stop_event.wait(10):
+                    break
 
         threading.Thread(target=update_clock_loop, daemon=True).start()
 
@@ -886,6 +994,7 @@ def main(page: ft.Page):
             dash_inner_view.visible = False
             render_dashboard_focus()
             safe_ui_update()
+            publish_status()
 
         def open_section(kind):
             state["in_dashboard"] = False
@@ -897,6 +1006,7 @@ def main(page: ft.Page):
             dash_view.visible = False
             dash_inner_view.visible = True
             back_to_cats()
+            publish_status()
 
         def open_catchup_section():
             state["in_dashboard"] = False
@@ -911,6 +1021,7 @@ def main(page: ft.Page):
                 "category_id": "__CATCHUP__",
                 "category_name": "⏱ KANAŁY Z ARCHIWUM (CATCH UP)",
             })
+            publish_status()
 
         def open_favorites_section():
             state["in_dashboard"] = False
@@ -924,6 +1035,7 @@ def main(page: ft.Page):
             dash_view.visible = False
             dash_inner_view.visible = True
             render_list()
+            publish_status()
 
         def open_profiles_section():
             state["in_dashboard"] = False
@@ -937,6 +1049,7 @@ def main(page: ft.Page):
             dash_view.visible = False
             dash_inner_view.visible = True
             render_list()
+            publish_status()
 
         dash_tile_live = make_vivo_tile("Live TV", "📺", lambda: open_section("live"), is_large=True)
         dash_tile_movies = make_vivo_tile("Movies", "🎬", lambda: open_section("vod"), is_large=True)
@@ -1019,10 +1132,10 @@ def main(page: ft.Page):
             size=13,
             color="#fbbf24",
         )
-        header_dev_lbl = ft.Text(f"📺 {device_name}", size=12, color="#34d399", weight=ft.FontWeight.BOLD)
+        header_dev_lbl = ft.Text(f"📺 {device_name} [{device_id}]", size=12, color="#34d399", weight=ft.FontWeight.BOLD)
         list_header_lbl = ft.Text("📂 LISTA KATEGORII", size=13, weight=ft.FontWeight.BOLD, color="#34d399")
         list_view = ft.ListView(expand=True, spacing=6, padding=4, auto_scroll=False)
-        status_banner = ft.Text(f"🟢 Vivo Player gotowy — ID: {device_id}", color="#34d399", size=12)
+        status_banner = ft.Text(f"🟢 Zdalny Cloud aktywny — Kod ID: {device_id}", color="#34d399", size=13)
 
         def trigger_focus_preview(item):
             if not isinstance(item, dict) or ("category_name" in item and "stream_id" not in item and "series_id" not in item):
@@ -1081,9 +1194,10 @@ def main(page: ft.Page):
             if not state["client"]:
                 return
             state["streams_cache"].clear()
+            state["categories_cache"] = {"live": None, "vod": None, "series": None}
             state["categories"] = {"live": [], "vod": [], "series": []}
             state["search_query"] = ""
-            now_playing_txt.value = "🔄 Odświeżanie listy z serwera..."
+            now_playing_txt.value = "🔄 Odświeżanie listy i bufora RAM z serwera..."
             list_header_lbl.value = "⏳ Pobieranie najnowszych pozycji..."
             list_view.controls.clear()
             safe_ui_update()
@@ -1095,7 +1209,7 @@ def main(page: ft.Page):
                     cur_kind = state["kind"]
                     raw_cats = state["client"].get_categories(cur_kind) or []
                     state["categories"][cur_kind] = build_special_top_categories(cur_kind, raw_cats)
-                    if state["view_mode"] in ("streams", "episodes") and state.get("active_cat") and not state["in_fav"] and not state["in_profiles"]:
+                    if not state["in_dashboard"] and state["view_mode"] in ("streams", "episodes") and state.get("active_cat") and not state["in_fav"] and not state["in_profiles"]:
                         act_cat = state["active_cat"]
                         items = state["client"].get_streams(cur_kind, act_cat.get("category_id")) or []
                         for it in items:
@@ -1142,8 +1256,8 @@ def main(page: ft.Page):
         def open_remote_settings_dlg(_e=None):
             nonlocal device_name, device_id
             app_state["dialog_open"] = True
-            name_in = ft.TextField(label="Nazwa odbiornika", value=device_name)
-            id_in = ft.TextField(label="Kod ID", value=device_id)
+            name_in = ft.TextField(label="Nazwa odbiornika", value=cache_get("device_name", device_name))
+            id_in = ft.TextField(label="Unikalny Kod ID (wpisz ten sam w panelu zdalnym)", value=cache_get("device_id", device_id))
 
             def _save(_):
                 nonlocal device_name, device_id
@@ -1151,15 +1265,91 @@ def main(page: ft.Page):
                 device_id = re.sub(r"[^a-zA-Z0-9_-]", "", id_in.value.strip()) or device_id
                 cache_set("device_name", device_name)
                 cache_set("device_id", device_id)
-                header_dev_lbl.value = f"📺 {device_name}"
+                header_dev_lbl.value = f"📺 {device_name} [{device_id}]"
+                status_banner.value = f"🟢 Zdalny Cloud aktywny — Kod ID: {device_id}"
+                set_tv_button_text(btn_remote_id, f"🌐 Kod ID Odbiornika: {device_id} ({device_name})")
+                update_vivo_footer()
+                dlg.open = False
+                app_state["dialog_open"] = False
+                safe_ui_update()
+                publish_status()
+
+            dlg = ft.AlertDialog(
+                title=ft.Text("🌐 Konfiguracja Zdalnego Odbiornika (Cloud)"),
+                content=ft.Column([name_in, id_in], tight=True, spacing=10),
+                actions=[
+                    ft.ElevatedButton(
+                        "Anuluj",
+                        on_click=lambda _: (setattr(dlg, "open", False), app_state.update({"dialog_open": False}), safe_ui_update()),
+                    ),
+                    ft.ElevatedButton("💾 Zapisz", on_click=_save, bgcolor="#059669", color="white"),
+                ],
+                on_dismiss=lambda _: app_state.update({"dialog_open": False}),
+            )
+            page.overlay.append(dlg)
+            dlg.open = True
+            safe_ui_update()
+
+        def open_profiles_dialog_from_login(_e=None):
+            if not profiles:
+                status_banner.value = "ℹ️ Brak zapisanych list. Wpisz dane poniżej lub wyślij listę zdalnie przez Cloud."
+                safe_ui_update()
+                return
+
+            app_state["dialog_open"] = True
+            col_items = []
+
+            def _select_p(prof):
+                dlg.open = False
+                app_state["dialog_open"] = False
+                apply_profile(prof)
+
+            def _delete_p(prof):
+                delete_saved_profile(prof.get("name"))
                 dlg.open = False
                 app_state["dialog_open"] = False
                 safe_ui_update()
 
+            for idx, p in enumerate(profiles):
+                p_name = p.get("name", f"Lista {idx + 1}")
+                p_mode = (p.get("mode") or "xtream").upper()
+                p_host = (p.get("server") or p.get("m3u_url") or "")[:30]
+                is_act = p_name == state.get("active_profile_name")
+                prefix = "🟢 [AKTYWNA] " if is_act else ""
+
+                row = ft.Row(
+                    [
+                        ft.ElevatedButton(
+                            f"{prefix}{idx + 1}. [{p_mode}] {p_name} ({p_host})",
+                            on_click=lambda _e, pr=p: _select_p(pr),
+                            bgcolor="#059669" if is_act else "#163828",
+                            color="white",
+                            expand=True,
+                        ),
+                        ft.ElevatedButton(
+                            "🗑",
+                            on_click=lambda _e, pr=p: _delete_p(pr),
+                            bgcolor="#7f1d1d",
+                            color="white",
+                        ),
+                    ],
+                    spacing=6,
+                )
+                col_items.append(row)
+
             dlg = ft.AlertDialog(
-                title=ft.Text("🌐 Ustawienia odbiornika"),
-                content=ft.Column([name_in, id_in], tight=True),
-                actions=[ft.ElevatedButton("Zapisz", on_click=_save, bgcolor="#059669", color="white")],
+                title=ft.Text("📋 Zapisane Listy / Serwery"),
+                content=ft.Container(
+                    content=ft.Column(col_items, tight=True, spacing=8, scroll=ft.ScrollMode.AUTO),
+                    width=480,
+                    height=300,
+                ),
+                actions=[
+                    ft.ElevatedButton(
+                        "Zamknij",
+                        on_click=lambda _: (setattr(dlg, "open", False), app_state.update({"dialog_open": False}), safe_ui_update()),
+                    )
+                ],
                 on_dismiss=lambda _: app_state.update({"dialog_open": False}),
             )
             page.overlay.append(dlg)
@@ -1214,20 +1404,37 @@ def main(page: ft.Page):
             state["now_playing"] = title
             state["current_item"] = item
             state["is_playing"] = True
+            state["paused"] = False
             now_playing_txt.value = f"▶ Odtwarzanie: {title}"
             status_info_title.value = f"▶ {title}"
             if state["auto_vlc"]:
                 launch_vlc_intent(url, title)
             else:
                 safe_ui_update()
+            publish_status()
+
+        def stop_playback(_e=None):
+            state["is_playing"] = False
+            state["paused"] = False
+            state["now_playing"] = "Brak aktywnego strumienia"
+            now_playing_txt.value = "⏹ Zatrzymano odtwarzanie"
+            safe_ui_update()
+            publish_status()
+
+        def toggle_play_pause(_e=None):
+            state["paused"] = not state["paused"]
+            now_playing_txt.value = "⏸ PAUZA" if state["paused"] else f"▶ {state['now_playing']}"
+            safe_ui_update()
+            publish_status()
 
         btn_vlc = make_tv_button("🚀 Otwórz VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"]), height=40)
         btn_vlc_mode = make_tv_button(VLC_MODE_LABELS[state["vlc_mode"]], cycle_vlc_mode, height=40)
-        btn_only_pl = make_tv_button(f"🇵🇱 Kat. PL: {'WŁ.' if state['only_pl'] else 'WYŁ.'}", toggle_only_pl, height=40)
-        btn_refresh_cat = make_tv_button("🔄 Odśwież", refresh_current_list, height=40)
+        btn_only_pl = make_tv_button(f"🇵🇱 Tylko PL: {'WŁ.' if state['only_pl'] else 'WYŁ.'}", toggle_only_pl, height=40)
+        btn_refresh_cat = make_tv_button("🔄 Odśwież RAM", refresh_current_list, height=40)
         btn_search = make_tv_button("🔍 Szukaj", open_search_dialog, height=40)
         btn_fav_toggle = make_tv_button("⭐ Ulubione", toggle_favorite, height=40)
         btn_tmdb = make_tv_button("ℹ TMDB", show_info_dialog, height=40)
+        btn_cloud_cfg = make_tv_button("🌐 Kod ID", open_remote_settings_dlg, height=40)
         btn_home = make_tv_button("🏠 Menu", open_dashboard, height=40)
         btn_logout = make_tv_button("⇄ Konto", lambda: do_logout(), height=40)
 
@@ -1239,31 +1446,50 @@ def main(page: ft.Page):
             btn_search,
             btn_fav_toggle,
             btn_tmdb,
+            btn_cloud_cfg,
             btn_home,
             btn_logout,
         ]
         list_item_buttons = []
         list_item_actions = []
 
-        # Ekran Logowania Vivo
-        btn_edit_srv = make_tv_button(f"🌐 Serwer: {creds['server'] or 'ustaw'}", lambda: open_field_editor("server", "Adres serwera (http://...)"))
-        btn_edit_usr = make_tv_button(f"👤 Login: {creds['username'] or 'ustaw'}", lambda: open_field_editor("username", "Nazwa użytkownika"))
-        btn_edit_pas = make_tv_button("🔑 Hasło: " + ("********" if creds["password"] else "ustaw"), lambda: open_field_editor("password", "Hasło", is_pass=True))
-        btn_edit_m3u = make_tv_button(f"📋 Link M3U: {'[Zapisano]' if creds['m3u_url'] else 'opcjonalnie'}", lambda: open_field_editor("m3u_url", "Pełny link M3U"))
+        # Ekran Logowania Vivo (z przyciskiem Kodu ID oraz Zapisanych List)
+        btn_remote_id = make_tv_button(f"🌐 Kod ID Odbiornika: {device_id} ({device_name})", open_remote_settings_dlg, height=42)
+        btn_edit_srv = make_tv_button(f"🌐 Serwer: {creds['server'] or 'ustaw'}", lambda: open_field_editor("server", "Adres serwera (http://...)"), height=42)
+        btn_edit_usr = make_tv_button(f"👤 Login: {creds['username'] or 'ustaw'}", lambda: open_field_editor("username", "Nazwa użytkownika"), height=42)
+        btn_edit_pas = make_tv_button("🔑 Hasło: " + ("********" if creds["password"] else "ustaw"), lambda: open_field_editor("password", "Hasło", is_pass=True), height=42)
+        btn_edit_m3u = make_tv_button(f"📋 Link M3U: {'[Zapisano]' if creds['m3u_url'] else 'opcjonalnie'}", lambda: open_field_editor("m3u_url", "Pełny link M3U"), height=42)
         btn_submit_login = make_tv_button("🚀 ZALOGUJ DO VIVO TV", lambda: do_login(), height=48)
-        login_items = [btn_edit_srv, btn_edit_usr, btn_edit_pas, btn_edit_m3u, btn_submit_login]
+        btn_saved_profiles_login = make_tv_button(f"📋 WYBIERZ ZAPISANĄ LISTĘ ({len(profiles)})", open_profiles_dialog_from_login, height=42)
+        btn_exit_login = make_tv_button("🚪 ZAMKNIJ APLIKACJĘ", close_app_cleanly, height=40)
+
+        login_items = [
+            btn_remote_id,             # 0
+            btn_edit_srv,              # 1
+            btn_edit_usr,              # 2
+            btn_edit_pas,              # 3
+            btn_edit_m3u,              # 4
+            btn_submit_login,          # 5
+            btn_saved_profiles_login,  # 6
+            btn_exit_login,            # 7
+        ]
+
+        def refresh_login_button_labels():
+            set_tv_button_text(btn_remote_id, f"🌐 Kod ID Odbiornika: {device_id} ({device_name})")
+            set_tv_button_text(btn_edit_srv, f"🌐 Serwer: {creds['server'] or 'ustaw'}")
+            set_tv_button_text(btn_edit_usr, f"👤 Login: {creds['username'] or 'ustaw'}")
+            set_tv_button_text(btn_edit_pas, "🔑 Hasło: " + ("********" if creds["password"] else "ustaw"))
+            set_tv_button_text(btn_edit_m3u, f"📋 Link M3U: {'[Zapisano]' if creds['m3u_url'] else 'opcjonalnie'}")
+            set_tv_button_text(btn_saved_profiles_login, f"📋 WYBIERZ ZAPISANĄ LISTĘ ({len(profiles)})")
 
         def open_field_editor(field_key, title_str, is_pass=False):
             app_state["dialog_open"] = True
             tf_in = ft.TextField(label=title_str, value=creds.get(field_key, ""), password=is_pass, autofocus=True, on_submit=lambda _: _save())
 
             def _save(_=None):
-                creds[field_key] = (tf_in.value or "").strip()
+                creds[field_key] = (tf_in.value or "").strip() if field_key != "password" else (tf_in.value or "")
                 cache_set(field_key, creds[field_key])
-                set_tv_button_text(btn_edit_srv, f"🌐 Serwer: {creds['server'] or 'ustaw'}")
-                set_tv_button_text(btn_edit_usr, f"👤 Login: {creds['username'] or 'ustaw'}")
-                set_tv_button_text(btn_edit_pas, "🔑 Hasło: " + ("********" if creds["password"] else "ustaw"))
-                set_tv_button_text(btn_edit_m3u, f"📋 Link M3U: {'[Zapisano]' if creds['m3u_url'] else 'opcjonalnie'}")
+                refresh_login_button_labels()
                 dlg.open = False
                 app_state["dialog_open"] = False
                 update_focus_styles()
@@ -1281,14 +1507,14 @@ def main(page: ft.Page):
         login_view = ft.Container(
             content=ft.Column(
                 [
-                    ft.Text("🟢 VIVO PLAYER IPTV", size=24, weight=ft.FontWeight.BOLD, color="#34d399"),
+                    ft.Text("🟢 VIVO PLAYER IPTV V6.6", size=24, weight=ft.FontWeight.BOLD, color="#34d399"),
                     status_banner,
                     *login_items,
                 ],
                 alignment=ft.MainAxisAlignment.CENTER,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=10,
-                width=520,
+                spacing=8,
+                width=540,
             ),
             alignment=ft.alignment.center,
             expand=True,
@@ -1297,7 +1523,7 @@ def main(page: ft.Page):
             padding=20,
         )
 
-        # Główny interfejs Vivo Dashboard (Zastąpienie ft.Icons stringami)
+        # Główny interfejs Vivo Dashboard
         dash_view = ft.Container(
             content=ft.Column(
                 [
@@ -1308,6 +1534,7 @@ def main(page: ft.Page):
                             ft.Row(
                                 [
                                     ft.IconButton(icon="search", icon_color="#34d399", on_click=open_search_dialog),
+                                    ft.IconButton(icon="person", icon_color="#34d399", on_click=do_logout),
                                     ft.IconButton(icon="settings", icon_color="#34d399", on_click=open_remote_settings_dlg),
                                 ],
                                 spacing=4,
@@ -1354,7 +1581,7 @@ def main(page: ft.Page):
                 ft.Row(
                     [
                         make_tv_button("🏠 Menu", open_dashboard, height=38, expand=True),
-                        make_tv_button("🔄 Odśwież", refresh_current_list, height=38, expand=True),
+                        make_tv_button("🔄 Odśwież RAM", refresh_current_list, height=38, expand=True),
                     ],
                     spacing=6,
                 ),
@@ -1409,7 +1636,7 @@ def main(page: ft.Page):
         def scroll_list_to_focus():
             if state["zone"] == "list" and 0 <= state["list_idx"] < len(list_item_buttons):
                 try:
-                    list_view.scroll_to(key=f"item_{state['list_idx']}", duration=120)
+                    list_view.scroll_to(key=f"item_{state['list_idx']}", duration=100)
                 except Exception:
                     pass
                 focused_btn = list_item_buttons[state["list_idx"]]
@@ -1420,7 +1647,7 @@ def main(page: ft.Page):
             if login_view.visible:
                 for i, item in enumerate(login_items):
                     is_foc = (state["zone"] == "login" and state["login_idx"] == i)
-                    item.bgcolor = "#fbbf24" if is_foc else "#163828"
+                    item.bgcolor = "#fbbf24" if is_foc else ("#059669" if i == 5 else "#163828")
                     item.border = ft.border.all(3, "white" if is_foc else "#22543d")
                     item.data["text_ctrl"].color = "black" if is_foc else "white"
                 safe_ui_update()
@@ -1461,39 +1688,74 @@ def main(page: ft.Page):
             pl_ids = get_current_pl_cat_ids()
 
             if state["in_profiles"]:
-                list_header_lbl.value = "📋 ZAPISANE LISTY"
+                list_header_lbl.value = f"📋 ZAPISANE LISTY ({len(profiles)})"
+                b_add = make_tv_button("➕ DODAJ / EDYTUJ LISTĘ RĘCZNIE", do_logout, key_str=f"item_{btn_idx}", height=42)
+                list_item_buttons.append(b_add)
+                list_item_actions.append(do_logout)
+                list_view.controls.append(b_add)
+                btn_idx += 1
+
                 for idx, prof in enumerate(profiles):
                     p_name = prof.get("name", f"Lista {idx + 1}")
+                    is_act = p_name == state.get("active_profile_name")
+                    badge = "🟢 [AKTYWNA] " if is_act else "📋 "
                     act_fn = lambda pr=prof: apply_profile(pr)
-                    b = make_tv_button(f"{idx + 1}. {p_name}", act_fn, key_str=f"item_{btn_idx}", height=44)
+                    b = make_tv_button(f"{idx + 1}. {badge}{p_name}", act_fn, key_str=f"item_{btn_idx}", height=46)
                     list_item_buttons.append(b)
                     list_item_actions.append(act_fn)
                     list_view.controls.append(b)
                     btn_idx += 1
+
+                    if not is_act or len(profiles) > 1:
+                        del_fn = lambda nm=p_name: delete_saved_profile(nm)
+                        b_del = make_tv_button(f"   ↳ 🗑 Usuń: {p_name}", del_fn, key_str=f"item_{btn_idx}", height=36)
+                        list_item_buttons.append(b_del)
+                        list_item_actions.append(del_fn)
+                        list_view.controls.append(b_del)
+                        btn_idx += 1
+
                 state["list_idx"] = min(state["list_idx"], max(0, len(list_item_buttons) - 1))
                 update_focus_styles(full_refresh=True)
                 return
 
             kind_lbl = {"live": "TV NA ŻYWO", "vod": "FILMY VOD", "series": "SERIALE"}[state["kind"]]
             if v_mode == "categories":
-                raw = list(state["categories"].get(state["kind"], []))
-                if state["only_pl"]:
-                    raw = [
-                        c for c in raw
-                        if str(c.get("category_id")) in ("__ALL__", "__RECENT__", "__CATCHUP__")
-                        or is_polish_text(c.get("category_name", ""))
-                    ]
-                list_header_lbl.value = f"📂 {kind_lbl} ({len(raw)})"
+                if state["categories_cache"].get(state["kind"]) is not None:
+                    raw = state["categories_cache"][state["kind"]]
+                else:
+                    raw = list(state["categories"].get(state["kind"], []))
+                    if state["only_pl"]:
+                        filtered_c = [
+                            c for c in raw
+                            if str(c.get("category_id")) in ("__ALL__", "__RECENT__", "__CATCHUP__")
+                            or is_polish_text(c.get("category_name", ""))
+                        ]
+                        if len(filtered_c) > 2:
+                            raw = filtered_c
+                    state["categories_cache"][state["kind"]] = raw
+                list_header_lbl.value = f"📂 {kind_lbl} (RAM ⚡) ({len(raw)})"
             elif v_mode == "episodes":
                 raw = list(state["episodes"])
                 list_header_lbl.value = f"🎞 {state['active_series_title']} ({len(raw)})"
             elif state["in_fav"]:
                 raw = list(favorites_items)
+                if state["only_pl"]:
+                    raw = [it for it in raw if is_polish_item(it, pl_ids)]
                 list_header_lbl.value = f"⭐ ULUBIONE ({len(raw)})"
             else:
                 raw = list(state["streams"])
-                cat_nm = (state["active_cat"] or {}).get("category_name", "Lista")
-                list_header_lbl.value = f"📺 {cat_nm} ({len(raw)})"
+                act_cat = state.get("active_cat") or {}
+                cat_nm = act_cat.get("category_name", "Lista")
+                cat_id_str = str(act_cat.get("category_id", ""))
+                cat_is_pl = (
+                    cat_id_str not in ("__ALL__", "__RECENT__", "__CATCHUP__")
+                    and (cat_id_str in pl_ids or is_polish_text(cat_nm))
+                )
+                if state["only_pl"] and not cat_is_pl:
+                    only_pl_s = [it for it in raw if is_polish_item(it, pl_ids)]
+                    if only_pl_s:
+                        raw = only_pl_s
+                list_header_lbl.value = f"📺 {cat_nm} (RAM ⚡) ({len(raw)})"
 
             q = state.get("search_query", "").strip().lower()
             if q:
@@ -1584,13 +1846,18 @@ def main(page: ft.Page):
             state["active_cat"] = None
             state["page_offset"] = 0
             if not state["categories"].get(state["kind"]):
+                list_header_lbl.value = "⏳ Pobieranie kategorii..."
+                safe_ui_update()
+
                 def _w():
                     try:
                         cats = state["client"].get_categories(state["kind"]) or []
                         state["categories"][state["kind"]] = build_special_top_categories(state["kind"], cats)
+                        state["categories_cache"][state["kind"]] = None
                         render_list()
                     except Exception:
                         pass
+
                 threading.Thread(target=_w, daemon=True).start()
             else:
                 render_list()
@@ -1664,7 +1931,7 @@ def main(page: ft.Page):
             url = state["client"].build_stream_url(k, item.get("stream_id"), ext, item=item)
             play_stream_url(url, title, item=item)
 
-        def do_login(_e=None, is_auto=False):
+        def do_login(_e=None, is_auto=False, profile_name_hint=""):
             if state["is_logging_in"]:
                 return
             state["is_logging_in"] = True
@@ -1684,14 +1951,30 @@ def main(page: ft.Page):
                         client = XtreamClient(srv, usr, pas)
                     u_info = client.login() or {}
                     state["client"] = client
+                    state["categories"] = {"live": [], "vod": [], "series": []}
+                    state["categories_cache"] = {"live": None, "vod": None, "series": None}
+                    state["streams_cache"].clear()
+
                     exp_ts = parse_int_safe(u_info.get("exp_date"), 0)
                     state["exp_date_str"] = (
                         datetime.datetime.fromtimestamp(exp_ts).strftime("%Y-%m-%d")
                         if exp_ts > 0
                         else "Unlimited"
                     )
-                    prof_name = register_or_update_profile(state.get("active_profile_name", ""), srv, usr, pas, m3u)
-                    state["active_profile_name"] = prof_name
+                    prof_name = register_or_update_profile(
+                        profile_name_hint or state.get("active_profile_name", ""),
+                        srv,
+                        usr,
+                        pas,
+                        m3u,
+                    )
+                    state["active_profile_name"] = prof_name or f"{client.username} ({client.server})"
+                    cache_set("server", srv)
+                    cache_set("username", usr)
+                    cache_set("password", pas)
+                    cache_set("m3u_url", m3u)
+                    refresh_login_button_labels()
+
                     login_view.visible = False
                     open_dashboard()
                 except Exception as ex:
@@ -1703,25 +1986,205 @@ def main(page: ft.Page):
             threading.Thread(target=_w, daemon=True).start()
 
         def do_logout(_e=None):
+            stop_playback()
             state["client"] = None
+            state["streams_cache"].clear()
+            state["categories_cache"] = {"live": None, "vod": None, "series": None}
             dash_view.visible = False
             dash_inner_view.visible = False
             login_view.visible = True
             state["zone"] = "login"
-            state["login_idx"] = 0
+            state["login_idx"] = 5
+            refresh_login_button_labels()
             update_focus_styles()
+            publish_status()
 
         def apply_profile(prof):
-            creds["server"] = prof.get("server", "")
-            creds["username"] = prof.get("username", "")
-            creds["password"] = prof.get("password", "")
-            creds["m3u_url"] = prof.get("m3u_url", "")
+            mode = prof.get("mode", "xtream")
+            name = prof.get("name", "Zdalna Lista")
+            state["active_profile_name"] = name
+            cache_set("active_profile_name", name)
+
+            if mode == "m3u" or (prof.get("m3u_url") and not prof.get("username")):
+                creds["m3u_url"] = prof.get("m3u_url") or prof.get("url") or ""
+                creds["server"] = "http://"
+                creds["username"] = ""
+                creds["password"] = ""
+            else:
+                creds["server"] = prof.get("server") or prof.get("host") or ""
+                creds["username"] = prof.get("username") or prof.get("user") or ""
+                creds["password"] = prof.get("password") or prof.get("pass") or ""
+                creds["m3u_url"] = ""
+
             cache_set("server", creds["server"])
             cache_set("username", creds["username"])
             cache_set("password", creds["password"])
             cache_set("m3u_url", creds["m3u_url"])
-            state["active_profile_name"] = prof.get("name", "")
-            do_login()
+            refresh_login_button_labels()
+            do_login(profile_name_hint=name)
+
+        # =====================================================================
+        # ZDALNE STEROWANIE I ODBIERANIE LIST PRZEZ CLOUD (NTFY.SH)
+        # =====================================================================
+        def handle_remote_command(cmd):
+            nonlocal profiles, device_name
+            c_type = cmd.get("type") or cmd.get("action") or cmd.get("cmd") or ""
+
+            if c_type in (
+                "add_profile",
+                "send_list",
+                "new_list",
+                "add_list",
+                "push_list",
+            ) or ("server" in cmd and "username" in cmd) or ("m3u_url" in cmd):
+                prof_name = (
+                    cmd.get("name")
+                    or cmd.get("profile_name")
+                    or f"Lista {len(profiles) + 1}"
+                )
+                mode = cmd.get("mode") or (
+                    "m3u" if cmd.get("m3u_url") and not cmd.get("username") else "xtream"
+                )
+                new_prof = {
+                    "name": prof_name,
+                    "mode": mode,
+                    "server": cmd.get("server") or cmd.get("host") or "",
+                    "username": cmd.get("username") or cmd.get("user") or "",
+                    "password": cmd.get("password") or cmd.get("pass") or "",
+                    "m3u_url": cmd.get("m3u_url") or cmd.get("url") or "",
+                    "added_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                }
+                profiles = [p for p in profiles if p.get("name") != prof_name]
+                profiles.insert(0, new_prof)
+                cache_set("profiles", profiles)
+                refresh_login_button_labels()
+
+                switch_now = cmd.get("switch", cmd.get("auto_switch", cmd.get("activate", True)))
+                if switch_now:
+                    apply_profile(new_prof)
+                else:
+                    if state["in_profiles"]:
+                        render_list()
+                    publish_status()
+
+            elif c_type in (
+                "switch_profile",
+                "select_profile",
+                "activate_profile",
+                "switch_list",
+                "switch",
+            ):
+                target = cmd.get("name") or cmd.get("profile_name")
+                for p in profiles:
+                    if p.get("name") == target:
+                        apply_profile(p)
+                        break
+
+            elif c_type in (
+                "delete_profile",
+                "remove_profile",
+                "del_profile",
+                "delete_list",
+                "delete",
+            ):
+                target = cmd.get("name") or cmd.get("profile_name")
+                delete_saved_profile(target)
+
+            elif c_type in ("set_name", "rename", "set_device_name", "save_name"):
+                nn = (cmd.get("device_name") or cmd.get("name") or "").strip()
+                if nn:
+                    device_name = nn
+                    cache_set("device_name", nn)
+                    cur_id = cache_get("device_id", device_id)
+                    header_dev_lbl.value = f"📺 {nn} [{cur_id}]"
+                    refresh_login_button_labels()
+                    update_vivo_footer()
+                    safe_ui_update()
+                    publish_status()
+
+            elif c_type in ("remote_control", "control", "player", "key", "command"):
+                act = cmd.get("command") or cmd.get("action") or cmd.get("key") or ""
+                _exec_player_action(act)
+            elif c_type in (
+                "play_pause",
+                "toggle",
+                "stop",
+                "mute",
+                "vol_up",
+                "vol_down",
+                "logout",
+                "refresh",
+                "reload_list",
+                "only_pl",
+                "toggle_only_pl",
+                "ping",
+                "status",
+            ):
+                _exec_player_action(c_type)
+
+        def _exec_player_action(act):
+            if act in ("play_pause", "toggle", "play", "pause"):
+                toggle_play_pause()
+            elif act == "stop":
+                stop_playback()
+            elif act == "mute":
+                state["muted"] = not state["muted"]
+                publish_status()
+            elif act in ("vol_up", "volume_up"):
+                state["volume"] = min(100, state["volume"] + 10)
+                publish_status()
+            elif act in ("vol_down", "volume_down"):
+                state["volume"] = max(0, state["volume"] - 10)
+                publish_status()
+            elif act == "logout":
+                do_logout()
+            elif act in ("reload_list", "refresh_list"):
+                refresh_current_list()
+            elif act in ("only_pl", "toggle_only_pl"):
+                toggle_only_pl()
+            elif act in ("refresh", "ping", "status", "get_status"):
+                publish_status()
+
+        def cloud_listener():
+            nonlocal processed_ids
+            listener_session = make_session()
+            while not stop_event.is_set():
+                if not app_state["paused_in_bg"]:
+                    try:
+                        clean_id = re.sub(r"[^a-zA-Z0-9_-]", "", cache_get("device_id", device_id))
+                        topics = f"iptv_v4_pro_{clean_id},iptv_v4_pro_{clean_id}_cmd"
+                        url = f"https://ntfy.sh/{topics}/json?poll=1&since=30m"
+                        r = listener_session.get(url, timeout=4)
+                        if r.status_code == 200 and not stop_event.is_set():
+                            for line in r.text.splitlines():
+                                if not line.strip():
+                                    continue
+                                event = json.loads(line)
+                                msg_id = event.get("id")
+                                if not msg_id or msg_id in processed_ids:
+                                    continue
+                                if event.get("event") != "message":
+                                    continue
+
+                                processed_ids.add(msg_id)
+                                cache_set("processed_ids", list(processed_ids)[-200:])
+
+                                raw_msg = event.get("message", "")
+                                try:
+                                    payload = json.loads(raw_msg)
+                                except Exception:
+                                    continue
+
+                                if not isinstance(payload, dict) or payload.get("type") == "player_status":
+                                    continue
+
+                                handle_remote_command(payload)
+                    except Exception:
+                        pass
+                if stop_event.wait(2.5):
+                    break
+
+        threading.Thread(target=cloud_listener, daemon=True).start()
 
         def handle_smart_back():
             if state["view_mode"] == "episodes":
@@ -1763,6 +2226,13 @@ def main(page: ft.Page):
                 return
 
             if dash_inner_view.visible:
+                if key in ("Page Down", "Channel Down"):
+                    change_page(PAGE_SIZE, jump_to_end=False)
+                    return
+                elif key in ("Page Up", "Channel Up"):
+                    change_page(-PAGE_SIZE, jump_to_end=False)
+                    return
+
                 if key == "Arrow Right":
                     if state["zone"] == "list":
                         state["zone"] = "right"
@@ -1807,12 +2277,14 @@ def main(page: ft.Page):
 
         page.on_keyboard_event = on_key_event
         update_focus_styles()
+        publish_status()
 
         if state["auto_login"] and has_saved_credentials():
-            threading.Thread(target=lambda: (time.sleep(0.3), do_login(is_auto=True)), daemon=True).start()
+            threading.Thread(target=lambda: (time.sleep(0.35), do_login(is_auto=True)), daemon=True).start()
 
     except Exception as e:
-        page.add(ft.Text(f"Błąd krytyczny: {e}", color="red", size=16))
+        err_msg = traceback.format_exc()
+        page.add(ft.Text(f"Błąd krytyczny: {e}\n{err_msg}", color="red", size=14))
         page.update()
 
 
