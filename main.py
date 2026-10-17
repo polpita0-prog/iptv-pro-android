@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-IPTV Client V6.6 PRO - VIVO TV EDITION (Android TV)
-Naprawiono i połączono wszystkie moduły:
-1. PEŁNA OBSŁUGA ZDALNEGO POŁĄCZENIA (CLOUD NTFY.SH):
-   - Przywrócono wątek nasłuchujący (cloud_listener), wysyłanie statusu (publish_status)
+IPTV Client V6.7 PRO - VIVO TV EDITION (Android TV)
+Poprawki w V6.7:
+1. NAPRAWIONO BŁĄD UnboundLocalError ('do_logout'):
+   - Uporządkowano kolejność definicji funkcji oraz zabezpieczono wszystkie handlery
+     przycisków i ikon na ekranie głównym Vivo.
+2. PEŁNA OBSŁUGA ZDALNEGO POŁĄCZENIA (CLOUD NTFY.SH):
+   - Wątek nasłuchujący (cloud_listener), wysyłanie statusu (publish_status)
      oraz zdalne wgrywanie/przełączanie list i sterowanie z panelu PC/WWW.
-2. INTERFEJS VIVO PLAYER + ZAAWANSOWANY BUFOR RAM (KATEGORIE I STRUMIENIE).
-3. PODGLĄD EPG NA ŻYWO ORAZ OPISÓW/PLAKATÓW TMDB PO NAJECHANIU KURSOREM.
-4. PRIORYTET POLSKICH KANAŁÓW I NOWOŚCI NA GÓRZE LISTY.
+3. INTERFEJS VIVO PLAYER + ZAAWANSOWANY BUFOR RAM (KATEGORIE I STRUMIENIE).
+4. PODGLĄD EPG NA ŻYWO ORAZ OPISÓW/PLAKATÓW TMDB PO NAJECHANIU KURSOREM.
 """
 
 import base64
@@ -536,7 +538,7 @@ def build_special_top_categories(kind: str, raw_cats: list) -> list:
 
 def main(page: ft.Page):
     try:
-        page.title = "IPTV V6.6 PRO - VIVO TV EDITION"
+        page.title = "IPTV V6.7 PRO - VIVO TV EDITION"
         page.theme_mode = ft.ThemeMode.DARK
         page.bgcolor = "#0b1f15"
         page.padding = 0
@@ -878,6 +880,96 @@ def main(page: ft.Page):
             box.data["base_text"] = new_text
             box.data["text_ctrl"].value = new_text
 
+        # Widgety zegara i stopki Vivo
+        clock_txt = ft.Text("00:00", size=32, weight=ft.FontWeight.BOLD, color="white")
+        date_txt = ft.Text("Saturday, 17 Oct 2026", size=13, color="#86efac")
+        footer_playlist_txt = ft.Text("Current Playlist: Brak", size=12, color="#86efac")
+        footer_expire_txt = ft.Text(f"Playlist Expire Date: Unlimited  •  ID: {device_id}", size=12, color="#86efac")
+
+        def update_vivo_footer():
+            cur_id = cache_get("device_id", device_id)
+            footer_playlist_txt.value = f"Current Playlist: {state.get('active_profile_name') or 'Domyślna'}"
+            footer_expire_txt.value = f"Playlist Expire Date: {state.get('exp_date_str') or 'Unlimited'}  •  Cloud ID: {cur_id}"
+
+        def update_clock_loop():
+            while not stop_event.is_set():
+                try:
+                    now = datetime.datetime.now()
+                    clock_txt.value = now.strftime("%H:%M")
+                    date_txt.value = now.strftime("%A, %d %b %Y")
+                    safe_ui_update()
+                except Exception:
+                    pass
+                if stop_event.wait(10):
+                    break
+
+        threading.Thread(target=update_clock_loop, daemon=True).start()
+
+        # Elementy prawego panelu podglądu (Okładka + EPG + Opis)
+        poster_img = ft.Image(
+            src="",
+            width=150,
+            height=215,
+            fit=ft.ImageFit.COVER,
+            border_radius=8,
+            visible=False,
+        )
+        status_info_title = ft.Text(
+            "Wybierz kanał lub film z listy",
+            size=17,
+            weight=ft.FontWeight.BOLD,
+            color="#34d399",
+            text_align=ft.TextAlign.LEFT,
+        )
+        status_info_sub = ft.Text(
+            "Najedź kursorem na pozycję, aby zobaczyć EPG, okładkę lub opis TMDB.\nNaciśnij OK, aby uruchomić odtwarzanie.",
+            size=13,
+            color="#cbd5e1",
+            text_align=ft.TextAlign.LEFT,
+            max_lines=7,
+            overflow=ft.TextOverflow.ELLIPSIS,
+        )
+
+        video_placeholder = ft.Container(
+            content=ft.Row(
+                [
+                    poster_img,
+                    ft.Column(
+                        [status_info_title, status_info_sub],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        horizontal_alignment=ft.CrossAxisAlignment.START,
+                        spacing=8,
+                        expand=True,
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=16,
+            ),
+            expand=True,
+            bgcolor="#091811",
+            border_radius=8,
+            border=ft.border.all(1, "#163828"),
+            padding=16,
+        )
+
+        now_playing_txt = ft.Text(
+            "▶ Pilot TV: ⬅️ ➡️ zmiana panelu | ⬆️ ⬇️ góra/dół | OK wybierz | WSTECZ cofnij",
+            weight=ft.FontWeight.BOLD,
+            size=13,
+            color="#fbbf24",
+        )
+        header_dev_lbl = ft.Text(f"📺 {device_name} [{device_id}]", size=12, color="#34d399", weight=ft.FontWeight.BOLD)
+        list_header_lbl = ft.Text("📂 LISTA KATEGORII", size=13, weight=ft.FontWeight.BOLD, color="#34d399")
+        list_view = ft.ListView(expand=True, spacing=6, padding=4, auto_scroll=False)
+        status_banner = ft.Text(f"🟢 Zdalny Cloud aktywny — Kod ID: {device_id}", color="#34d399", size=13)
+
+        def is_favorite(item):
+            uid = get_item_unique_id(item)
+            if not uid:
+                return False
+            return any(get_item_unique_id(f) == uid for f in favorites_items)
+
         def toggle_only_pl(_e=None):
             state["only_pl"] = not state["only_pl"]
             cache_set("only_pl", state["only_pl"])
@@ -904,12 +996,6 @@ def main(page: ft.Page):
             now_playing_txt.value = f"🔧 Zmieniono tryb odtwarzacza na: {VLC_MODE_LABELS[new_mode]}"
             safe_ui_update()
 
-        def is_favorite(item):
-            uid = get_item_unique_id(item)
-            if not uid:
-                return False
-            return any(get_item_unique_id(f) == uid for f in favorites_items)
-
         def toggle_favorite(_e=None):
             nonlocal favorites_items
             cur_item = state.get("current_item")
@@ -931,42 +1017,107 @@ def main(page: ft.Page):
             )
             render_list()
 
-        def delete_saved_profile(prof_name):
-            nonlocal profiles
-            profiles = [p for p in profiles if p.get("name") != prof_name]
-            cache_set("profiles", profiles)
-            refresh_login_button_labels()
-            now_playing_txt.value = f"🗑 Usunięto listę: {prof_name}"
-            if state["in_profiles"]:
-                render_list()
+        def stop_playback(_e=None):
+            state["is_playing"] = False
+            state["paused"] = False
+            state["now_playing"] = "Brak aktywnego strumienia"
+            now_playing_txt.value = "⏹ Zatrzymano odtwarzanie"
+            safe_ui_update()
+            publish_status()
+
+        def toggle_play_pause(_e=None):
+            state["paused"] = not state["paused"]
+            now_playing_txt.value = "⏸ PAUZA" if state["paused"] else f"▶ {state['now_playing']}"
+            safe_ui_update()
+            publish_status()
+
+        def launch_vlc_intent(raw_url: str, title: str = ""):
+            if not raw_url:
+                return
+            clean_u = raw_url.strip().splitlines()[0].strip()
+            mode = state.get("vlc_mode", "vlc_clean")
+            no_proto = re.sub(r"^https?://", "", clean_u, flags=re.IGNORECASE)
+            scheme = "https" if clean_u.lower().startswith("https://") else "http"
+
+            if mode == "vlc_clean":
+                target_url = f"vlc://{no_proto}"
+            elif mode == "intent":
+                target_url = f"intent://{no_proto}#Intent;scheme={scheme};type=video/*;package=org.videolan.vlc;end"
+            elif mode == "vlc_full":
+                target_url = f"vlc://{clean_u}"
+            else:
+                target_url = clean_u
+
+            now_playing_txt.value = f"🚀 VLC ({mode}): {title or state['now_playing']}"
+            safe_ui_update()
+            threading.Thread(target=lambda: page.launch_url(target_url), daemon=True).start()
+
+        def play_stream_url(url, title, item=None):
+            state["playing_url"] = url
+            state["now_playing"] = title
+            state["current_item"] = item
+            state["is_playing"] = True
+            state["paused"] = False
+            now_playing_txt.value = f"▶ Odtwarzanie: {title}"
+            status_info_title.value = f"▶ {title}"
+            if state["auto_vlc"]:
+                launch_vlc_intent(url, title)
             else:
                 safe_ui_update()
             publish_status()
 
-        # Widgety zegara i stopki Vivo
-        clock_txt = ft.Text("00:00", size=32, weight=ft.FontWeight.BOLD, color="white")
-        date_txt = ft.Text("Saturday, 17 Oct 2026", size=13, color="#86efac")
-        footer_playlist_txt = ft.Text("Current Playlist: Brak", size=12, color="#86efac")
-        footer_expire_txt = ft.Text(f"Playlist Expire Date: Unlimited  •  ID: {device_id}", size=12, color="#86efac")
+        def trigger_focus_preview(item):
+            if not isinstance(item, dict) or ("category_name" in item and "stream_id" not in item and "series_id" not in item):
+                return
+            state["current_item"] = item
+            set_tv_button_text(
+                btn_fav_toggle,
+                "⭐ Usuń z Ulub." if is_favorite(item) else "⭐ Dodaj do Ulub.",
+            )
+            title = item.get("display_title") or item.get("name") or item.get("title") or "Pozycja"
+            icon_url = item.get("stream_icon") or item.get("cover") or ""
+            k = item.get("kind") or state["kind"]
 
-        def update_vivo_footer():
-            cur_id = cache_get("device_id", device_id)
-            footer_playlist_txt.value = f"Current Playlist: {state.get('active_profile_name') or 'Domyślna'}"
-            footer_expire_txt.value = f"Playlist Expire Date: {state.get('exp_date_str') or 'Unlimited'}  •  Cloud ID: {cur_id}"
+            status_info_title.value = f"📺 {title}" if k == "live" else f"🎬 {title}"
+            if icon_url and icon_url.startswith("http"):
+                poster_img.src = icon_url
+                poster_img.visible = True
+            else:
+                poster_img.visible = False
 
-        def update_clock_loop():
-            while not stop_event.is_set():
-                try:
-                    now = datetime.datetime.now()
-                    clock_txt.value = now.strftime("%H:%M")
-                    date_txt.value = now.strftime("%A, %d %b %Y")
+            app_state["preview_seq"] += 1
+            cur_seq = app_state["preview_seq"]
+
+            def _async_preview():
+                time.sleep(0.35)
+                if cur_seq != app_state["preview_seq"] or stop_event.is_set():
+                    return
+                if k == "live" and state.get("client"):
+                    epg_list = state["client"].get_short_epg(item.get("stream_id"))
+                    if cur_seq != app_state["preview_seq"]:
+                        return
+                    if epg_list:
+                        status_info_sub.value = "\n\n".join(epg_list)
+                    else:
+                        arch = "⏱ Dostępne archiwum Catch Up" if parse_int_safe(item.get("tv_archive"), 0) == 1 else "📡 Transmisja na żywo"
+                        status_info_sub.value = f"{arch}\nBrak szczegółowego programu EPG dla tej stacji."
                     safe_ui_update()
-                except Exception:
-                    pass
-                if stop_event.wait(10):
-                    break
+                elif k in ("vod", "series"):
+                    tmdb = fetch_tmdb_details(title)
+                    if cur_seq != app_state["preview_seq"]:
+                        return
+                    if tmdb:
+                        if tmdb.get("poster") and not poster_img.visible:
+                            poster_img.src = tmdb["poster"]
+                            poster_img.visible = True
+                        yr = f"Rok: {tmdb['year']}  |  " if tmdb.get("year") else ""
+                        rt = f"Ocena TMDB: ⭐ {tmdb['rating']}/10\n" if tmdb.get("rating") else ""
+                        status_info_sub.value = f"{yr}{rt}{tmdb.get('plot') or 'Brak opisu fabuły.'}"
+                    else:
+                        status_info_sub.value = "Naciśnij OK, aby rozpocząć odtwarzanie lub wybrać odcinek."
+                    safe_ui_update()
 
-        threading.Thread(target=update_clock_loop, daemon=True).start()
+            threading.Thread(target=_async_preview, daemon=True).start()
 
         # Główne kafelki pulpitu Vivo
         def make_vivo_tile(title, icon_char, on_click_fn, is_large=False):
@@ -1078,118 +1229,6 @@ def main(page: ft.Page):
                     tile.border = ft.border.all(1, "#22543d")
             safe_ui_update()
 
-        # Elementy prawego panelu podglądu (Okładka + EPG + Opis)
-        poster_img = ft.Image(
-            src="",
-            width=150,
-            height=215,
-            fit=ft.ImageFit.COVER,
-            border_radius=8,
-            visible=False,
-        )
-        status_info_title = ft.Text(
-            "Wybierz kanał lub film z listy",
-            size=17,
-            weight=ft.FontWeight.BOLD,
-            color="#34d399",
-            text_align=ft.TextAlign.LEFT,
-        )
-        status_info_sub = ft.Text(
-            "Najedź kursorem na pozycję, aby zobaczyć EPG, okładkę lub opis TMDB.\nNaciśnij OK, aby uruchomić odtwarzanie.",
-            size=13,
-            color="#cbd5e1",
-            text_align=ft.TextAlign.LEFT,
-            max_lines=7,
-            overflow=ft.TextOverflow.ELLIPSIS,
-        )
-
-        video_placeholder = ft.Container(
-            content=ft.Row(
-                [
-                    poster_img,
-                    ft.Column(
-                        [status_info_title, status_info_sub],
-                        alignment=ft.MainAxisAlignment.CENTER,
-                        horizontal_alignment=ft.CrossAxisAlignment.START,
-                        spacing=8,
-                        expand=True,
-                    ),
-                ],
-                alignment=ft.MainAxisAlignment.START,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=16,
-            ),
-            expand=True,
-            bgcolor="#091811",
-            border_radius=8,
-            border=ft.border.all(1, "#163828"),
-            padding=16,
-        )
-
-        now_playing_txt = ft.Text(
-            "▶ Pilot TV: ⬅️ ➡️ zmiana panelu | ⬆️ ⬇️ góra/dół | OK wybierz | WSTECZ cofnij",
-            weight=ft.FontWeight.BOLD,
-            size=13,
-            color="#fbbf24",
-        )
-        header_dev_lbl = ft.Text(f"📺 {device_name} [{device_id}]", size=12, color="#34d399", weight=ft.FontWeight.BOLD)
-        list_header_lbl = ft.Text("📂 LISTA KATEGORII", size=13, weight=ft.FontWeight.BOLD, color="#34d399")
-        list_view = ft.ListView(expand=True, spacing=6, padding=4, auto_scroll=False)
-        status_banner = ft.Text(f"🟢 Zdalny Cloud aktywny — Kod ID: {device_id}", color="#34d399", size=13)
-
-        def trigger_focus_preview(item):
-            if not isinstance(item, dict) or ("category_name" in item and "stream_id" not in item and "series_id" not in item):
-                return
-            state["current_item"] = item
-            set_tv_button_text(
-                btn_fav_toggle,
-                "⭐ Usuń z Ulub." if is_favorite(item) else "⭐ Dodaj do Ulub.",
-            )
-            title = item.get("display_title") or item.get("name") or item.get("title") or "Pozycja"
-            icon_url = item.get("stream_icon") or item.get("cover") or ""
-            k = item.get("kind") or state["kind"]
-
-            status_info_title.value = f"📺 {title}" if k == "live" else f"🎬 {title}"
-            if icon_url and icon_url.startswith("http"):
-                poster_img.src = icon_url
-                poster_img.visible = True
-            else:
-                poster_img.visible = False
-
-            app_state["preview_seq"] += 1
-            cur_seq = app_state["preview_seq"]
-
-            def _async_preview():
-                time.sleep(0.35)
-                if cur_seq != app_state["preview_seq"] or stop_event.is_set():
-                    return
-                if k == "live" and state.get("client"):
-                    epg_list = state["client"].get_short_epg(item.get("stream_id"))
-                    if cur_seq != app_state["preview_seq"]:
-                        return
-                    if epg_list:
-                        status_info_sub.value = "\n\n".join(epg_list)
-                    else:
-                        arch = "⏱ Dostępne archiwum Catch Up" if parse_int_safe(item.get("tv_archive"), 0) == 1 else "📡 Transmisja na żywo"
-                        status_info_sub.value = f"{arch}\nBrak szczegółowego programu EPG dla tej stacji."
-                    safe_ui_update()
-                elif k in ("vod", "series"):
-                    tmdb = fetch_tmdb_details(title)
-                    if cur_seq != app_state["preview_seq"]:
-                        return
-                    if tmdb:
-                        if tmdb.get("poster") and not poster_img.visible:
-                            poster_img.src = tmdb["poster"]
-                            poster_img.visible = True
-                        yr = f"Rok: {tmdb['year']}  |  " if tmdb.get("year") else ""
-                        rt = f"Ocena TMDB: ⭐ {tmdb['rating']}/10\n" if tmdb.get("rating") else ""
-                        status_info_sub.value = f"{yr}{rt}{tmdb.get('plot') or 'Brak opisu fabuły.'}"
-                    else:
-                        status_info_sub.value = "Naciśnij OK, aby rozpocząć odtwarzanie lub wybrać odcinek."
-                    safe_ui_update()
-
-            threading.Thread(target=_async_preview, daemon=True).start()
-
         def refresh_current_list(_e=None):
             if not state["client"]:
                 return
@@ -1290,6 +1329,143 @@ def main(page: ft.Page):
             dlg.open = True
             safe_ui_update()
 
+        def show_info_dialog(_e=None):
+            cur_item = state.get("current_item")
+            title = (cur_item.get("name") or cur_item.get("title")) if isinstance(cur_item, dict) else state["now_playing"]
+            app_state["dialog_open"] = True
+            dlg = ft.AlertDialog(
+                title=ft.Text(f"TMDB: {title}"),
+                content=ft.Text("⏳ Pobieranie opisu..."),
+                actions=[ft.ElevatedButton("Zamknij", on_click=lambda _: (setattr(dlg, "open", False), app_state.update({"dialog_open": False}), safe_ui_update()))],
+                on_dismiss=lambda _: app_state.update({"dialog_open": False}),
+            )
+            page.overlay.append(dlg)
+            dlg.open = True
+            safe_ui_update()
+
+            def _w():
+                tmdb = fetch_tmdb_details(title)
+                txt = f"Rok: {tmdb.get('year')}\nOcena: ⭐ {tmdb.get('rating')}/10\n\n{tmdb.get('plot') or 'Brak opisu.'}" if tmdb else "Brak danych w bazie TMDB."
+                dlg.content = ft.Text(txt)
+                safe_ui_update()
+
+            threading.Thread(target=_w, daemon=True).start()
+
+        # =====================================================================
+        # LOGOWANIE, WYLOGOWANIE I PRZEŁĄCZANIE PROFILI (ZADEKLAROWANE PRZED UI)
+        # =====================================================================
+        def refresh_login_button_labels():
+            set_tv_button_text(btn_remote_id, f"🌐 Kod ID Odbiornika: {device_id} ({device_name})")
+            set_tv_button_text(btn_edit_srv, f"🌐 Serwer: {creds['server'] or 'ustaw'}")
+            set_tv_button_text(btn_edit_usr, f"👤 Login: {creds['username'] or 'ustaw'}")
+            set_tv_button_text(btn_edit_pas, "🔑 Hasło: " + ("********" if creds["password"] else "ustaw"))
+            set_tv_button_text(btn_edit_m3u, f"📋 Link M3U: {'[Zapisano]' if creds['m3u_url'] else 'opcjonalnie'}")
+            set_tv_button_text(btn_saved_profiles_login, f"📋 WYBIERZ ZAPISANĄ LISTĘ ({len(profiles)})")
+
+        def delete_saved_profile(prof_name):
+            nonlocal profiles
+            profiles = [p for p in profiles if p.get("name") != prof_name]
+            cache_set("profiles", profiles)
+            refresh_login_button_labels()
+            now_playing_txt.value = f"🗑 Usunięto listę: {prof_name}"
+            if state["in_profiles"]:
+                render_list()
+            else:
+                safe_ui_update()
+            publish_status()
+
+        def do_login(_e=None, is_auto=False, profile_name_hint=""):
+            if state["is_logging_in"]:
+                return
+            state["is_logging_in"] = True
+            status_banner.value = "⏳ Łączenie z serwerem Vivo..."
+            safe_ui_update()
+
+            def _w():
+                try:
+                    m3u = creds["m3u_url"].strip()
+                    srv = creds["server"].strip()
+                    usr = creds["username"].strip()
+                    pas = creds["password"]
+                    if m3u and (not usr or not pas):
+                        ext = extract_xtream_from_m3u_url(m3u)
+                        client = XtreamClient(*ext) if ext else M3UClient(m3u)
+                    else:
+                        client = XtreamClient(srv, usr, pas)
+                    u_info = client.login() or {}
+                    state["client"] = client
+                    state["categories"] = {"live": [], "vod": [], "series": []}
+                    state["categories_cache"] = {"live": None, "vod": None, "series": None}
+                    state["streams_cache"].clear()
+
+                    exp_ts = parse_int_safe(u_info.get("exp_date"), 0)
+                    state["exp_date_str"] = (
+                        datetime.datetime.fromtimestamp(exp_ts).strftime("%Y-%m-%d")
+                        if exp_ts > 0
+                        else "Unlimited"
+                    )
+                    prof_name = register_or_update_profile(
+                        profile_name_hint or state.get("active_profile_name", ""),
+                        srv,
+                        usr,
+                        pas,
+                        m3u,
+                    )
+                    state["active_profile_name"] = prof_name or f"{client.username} ({client.server})"
+                    cache_set("server", srv)
+                    cache_set("username", usr)
+                    cache_set("password", pas)
+                    cache_set("m3u_url", m3u)
+                    refresh_login_button_labels()
+
+                    login_view.visible = False
+                    open_dashboard()
+                except Exception as ex:
+                    status_banner.value = f"❌ Błąd logowania: {ex}"
+                    safe_ui_update()
+                finally:
+                    state["is_logging_in"] = False
+
+            threading.Thread(target=_w, daemon=True).start()
+
+        def do_logout(_e=None):
+            stop_playback()
+            state["client"] = None
+            state["streams_cache"].clear()
+            state["categories_cache"] = {"live": None, "vod": None, "series": None}
+            dash_view.visible = False
+            dash_inner_view.visible = False
+            login_view.visible = True
+            state["zone"] = "login"
+            state["login_idx"] = 5
+            refresh_login_button_labels()
+            update_focus_styles()
+            publish_status()
+
+        def apply_profile(prof):
+            mode = prof.get("mode", "xtream")
+            name = prof.get("name", "Zdalna Lista")
+            state["active_profile_name"] = name
+            cache_set("active_profile_name", name)
+
+            if mode == "m3u" or (prof.get("m3u_url") and not prof.get("username")):
+                creds["m3u_url"] = prof.get("m3u_url") or prof.get("url") or ""
+                creds["server"] = "http://"
+                creds["username"] = ""
+                creds["password"] = ""
+            else:
+                creds["server"] = prof.get("server") or prof.get("host") or ""
+                creds["username"] = prof.get("username") or prof.get("user") or ""
+                creds["password"] = prof.get("password") or prof.get("pass") or ""
+                creds["m3u_url"] = ""
+
+            cache_set("server", creds["server"])
+            cache_set("username", creds["username"])
+            cache_set("password", creds["password"])
+            cache_set("m3u_url", creds["m3u_url"])
+            refresh_login_button_labels()
+            do_login(profile_name_hint=name)
+
         def open_profiles_dialog_from_login(_e=None):
             if not profiles:
                 status_banner.value = "ℹ️ Brak zapisanych list. Wpisz dane poniżej lub wyślij listę zdalnie przez Cloud."
@@ -1356,76 +1532,27 @@ def main(page: ft.Page):
             dlg.open = True
             safe_ui_update()
 
-        def show_info_dialog(_e=None):
-            cur_item = state.get("current_item")
-            title = (cur_item.get("name") or cur_item.get("title")) if isinstance(cur_item, dict) else state["now_playing"]
+        def open_field_editor(field_key, title_str, is_pass=False):
             app_state["dialog_open"] = True
+            tf_in = ft.TextField(label=title_str, value=creds.get(field_key, ""), password=is_pass, autofocus=True, on_submit=lambda _: _save())
+
+            def _save(_=None):
+                creds[field_key] = (tf_in.value or "").strip() if field_key != "password" else (tf_in.value or "")
+                cache_set(field_key, creds[field_key])
+                refresh_login_button_labels()
+                dlg.open = False
+                app_state["dialog_open"] = False
+                update_focus_styles()
+
             dlg = ft.AlertDialog(
-                title=ft.Text(f"TMDB: {title}"),
-                content=ft.Text("⏳ Pobieranie opisu..."),
-                actions=[ft.ElevatedButton("Zamknij", on_click=lambda _: (setattr(dlg, "open", False), app_state.update({"dialog_open": False}), safe_ui_update()))],
+                title=ft.Text(title_str),
+                content=ft.Column([tf_in], tight=True),
+                actions=[ft.ElevatedButton("Zapisz", on_click=_save, bgcolor="#059669", color="white")],
                 on_dismiss=lambda _: app_state.update({"dialog_open": False}),
             )
             page.overlay.append(dlg)
             dlg.open = True
             safe_ui_update()
-
-            def _w():
-                tmdb = fetch_tmdb_details(title)
-                txt = f"Rok: {tmdb.get('year')}\nOcena: ⭐ {tmdb.get('rating')}/10\n\n{tmdb.get('plot') or 'Brak opisu.'}" if tmdb else "Brak danych w bazie TMDB."
-                dlg.content = ft.Text(txt)
-                safe_ui_update()
-
-            threading.Thread(target=_w, daemon=True).start()
-
-        def launch_vlc_intent(raw_url: str, title: str = ""):
-            if not raw_url:
-                return
-            clean_u = raw_url.strip().splitlines()[0].strip()
-            mode = state.get("vlc_mode", "vlc_clean")
-            no_proto = re.sub(r"^https?://", "", clean_u, flags=re.IGNORECASE)
-            scheme = "https" if clean_u.lower().startswith("https://") else "http"
-
-            if mode == "vlc_clean":
-                target_url = f"vlc://{no_proto}"
-            elif mode == "intent":
-                target_url = f"intent://{no_proto}#Intent;scheme={scheme};type=video/*;package=org.videolan.vlc;end"
-            elif mode == "vlc_full":
-                target_url = f"vlc://{clean_u}"
-            else:
-                target_url = clean_u
-
-            now_playing_txt.value = f"🚀 VLC ({mode}): {title or state['now_playing']}"
-            safe_ui_update()
-            threading.Thread(target=lambda: page.launch_url(target_url), daemon=True).start()
-
-        def play_stream_url(url, title, item=None):
-            state["playing_url"] = url
-            state["now_playing"] = title
-            state["current_item"] = item
-            state["is_playing"] = True
-            state["paused"] = False
-            now_playing_txt.value = f"▶ Odtwarzanie: {title}"
-            status_info_title.value = f"▶ {title}"
-            if state["auto_vlc"]:
-                launch_vlc_intent(url, title)
-            else:
-                safe_ui_update()
-            publish_status()
-
-        def stop_playback(_e=None):
-            state["is_playing"] = False
-            state["paused"] = False
-            state["now_playing"] = "Brak aktywnego strumienia"
-            now_playing_txt.value = "⏹ Zatrzymano odtwarzanie"
-            safe_ui_update()
-            publish_status()
-
-        def toggle_play_pause(_e=None):
-            state["paused"] = not state["paused"]
-            now_playing_txt.value = "⏸ PAUZA" if state["paused"] else f"▶ {state['now_playing']}"
-            safe_ui_update()
-            publish_status()
 
         btn_vlc = make_tv_button("🚀 Otwórz VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"]), height=40)
         btn_vlc_mode = make_tv_button(VLC_MODE_LABELS[state["vlc_mode"]], cycle_vlc_mode, height=40)
@@ -1474,40 +1601,10 @@ def main(page: ft.Page):
             btn_exit_login,            # 7
         ]
 
-        def refresh_login_button_labels():
-            set_tv_button_text(btn_remote_id, f"🌐 Kod ID Odbiornika: {device_id} ({device_name})")
-            set_tv_button_text(btn_edit_srv, f"🌐 Serwer: {creds['server'] or 'ustaw'}")
-            set_tv_button_text(btn_edit_usr, f"👤 Login: {creds['username'] or 'ustaw'}")
-            set_tv_button_text(btn_edit_pas, "🔑 Hasło: " + ("********" if creds["password"] else "ustaw"))
-            set_tv_button_text(btn_edit_m3u, f"📋 Link M3U: {'[Zapisano]' if creds['m3u_url'] else 'opcjonalnie'}")
-            set_tv_button_text(btn_saved_profiles_login, f"📋 WYBIERZ ZAPISANĄ LISTĘ ({len(profiles)})")
-
-        def open_field_editor(field_key, title_str, is_pass=False):
-            app_state["dialog_open"] = True
-            tf_in = ft.TextField(label=title_str, value=creds.get(field_key, ""), password=is_pass, autofocus=True, on_submit=lambda _: _save())
-
-            def _save(_=None):
-                creds[field_key] = (tf_in.value or "").strip() if field_key != "password" else (tf_in.value or "")
-                cache_set(field_key, creds[field_key])
-                refresh_login_button_labels()
-                dlg.open = False
-                app_state["dialog_open"] = False
-                update_focus_styles()
-
-            dlg = ft.AlertDialog(
-                title=ft.Text(title_str),
-                content=ft.Column([tf_in], tight=True),
-                actions=[ft.ElevatedButton("Zapisz", on_click=_save, bgcolor="#059669", color="white")],
-                on_dismiss=lambda _: app_state.update({"dialog_open": False}),
-            )
-            page.overlay.append(dlg)
-            dlg.open = True
-            safe_ui_update()
-
         login_view = ft.Container(
             content=ft.Column(
                 [
-                    ft.Text("🟢 VIVO PLAYER IPTV V6.6", size=24, weight=ft.FontWeight.BOLD, color="#34d399"),
+                    ft.Text("🟢 VIVO PLAYER IPTV V6.7", size=24, weight=ft.FontWeight.BOLD, color="#34d399"),
                     status_banner,
                     *login_items,
                 ],
@@ -1533,9 +1630,9 @@ def main(page: ft.Page):
                             ft.Column([clock_txt, date_txt], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                             ft.Row(
                                 [
-                                    ft.IconButton(icon="search", icon_color="#34d399", on_click=open_search_dialog),
-                                    ft.IconButton(icon="person", icon_color="#34d399", on_click=do_logout),
-                                    ft.IconButton(icon="settings", icon_color="#34d399", on_click=open_remote_settings_dlg),
+                                    ft.IconButton(icon="search", icon_color="#34d399", on_click=lambda e: open_search_dialog(e)),
+                                    ft.IconButton(icon="person", icon_color="#34d399", on_click=lambda e: do_logout(e)),
+                                    ft.IconButton(icon="settings", icon_color="#34d399", on_click=lambda e: open_remote_settings_dlg(e)),
                                 ],
                                 spacing=4,
                             ),
@@ -1555,8 +1652,8 @@ def main(page: ft.Page):
                             ft.Column([footer_playlist_txt, footer_expire_txt], spacing=2),
                             ft.Row(
                                 [
-                                    ft.IconButton(icon="refresh", icon_color="#34d399", on_click=refresh_current_list),
-                                    ft.IconButton(icon="power_settings_new", icon_color="#ef4444", on_click=close_app_cleanly),
+                                    ft.IconButton(icon="refresh", icon_color="#34d399", on_click=lambda e: refresh_current_list(e)),
+                                    ft.IconButton(icon="power_settings_new", icon_color="#ef4444", on_click=lambda e: close_app_cleanly(e)),
                                 ],
                                 spacing=8,
                             ),
@@ -1689,9 +1786,9 @@ def main(page: ft.Page):
 
             if state["in_profiles"]:
                 list_header_lbl.value = f"📋 ZAPISANE LISTY ({len(profiles)})"
-                b_add = make_tv_button("➕ DODAJ / EDYTUJ LISTĘ RĘCZNIE", do_logout, key_str=f"item_{btn_idx}", height=42)
+                b_add = make_tv_button("➕ DODAJ / EDYTUJ LISTĘ RĘCZNIE", lambda: do_logout(), key_str=f"item_{btn_idx}", height=42)
                 list_item_buttons.append(b_add)
-                list_item_actions.append(do_logout)
+                list_item_actions.append(lambda: do_logout())
                 list_view.controls.append(b_add)
                 btn_idx += 1
 
@@ -1930,98 +2027,6 @@ def main(page: ft.Page):
             ext = item.get("container_extension", "ts" if k == "live" else "mp4") or ("ts" if k == "live" else "mp4")
             url = state["client"].build_stream_url(k, item.get("stream_id"), ext, item=item)
             play_stream_url(url, title, item=item)
-
-        def do_login(_e=None, is_auto=False, profile_name_hint=""):
-            if state["is_logging_in"]:
-                return
-            state["is_logging_in"] = True
-            status_banner.value = "⏳ Łączenie z serwerem Vivo..."
-            safe_ui_update()
-
-            def _w():
-                try:
-                    m3u = creds["m3u_url"].strip()
-                    srv = creds["server"].strip()
-                    usr = creds["username"].strip()
-                    pas = creds["password"]
-                    if m3u and (not usr or not pas):
-                        ext = extract_xtream_from_m3u_url(m3u)
-                        client = XtreamClient(*ext) if ext else M3UClient(m3u)
-                    else:
-                        client = XtreamClient(srv, usr, pas)
-                    u_info = client.login() or {}
-                    state["client"] = client
-                    state["categories"] = {"live": [], "vod": [], "series": []}
-                    state["categories_cache"] = {"live": None, "vod": None, "series": None}
-                    state["streams_cache"].clear()
-
-                    exp_ts = parse_int_safe(u_info.get("exp_date"), 0)
-                    state["exp_date_str"] = (
-                        datetime.datetime.fromtimestamp(exp_ts).strftime("%Y-%m-%d")
-                        if exp_ts > 0
-                        else "Unlimited"
-                    )
-                    prof_name = register_or_update_profile(
-                        profile_name_hint or state.get("active_profile_name", ""),
-                        srv,
-                        usr,
-                        pas,
-                        m3u,
-                    )
-                    state["active_profile_name"] = prof_name or f"{client.username} ({client.server})"
-                    cache_set("server", srv)
-                    cache_set("username", usr)
-                    cache_set("password", pas)
-                    cache_set("m3u_url", m3u)
-                    refresh_login_button_labels()
-
-                    login_view.visible = False
-                    open_dashboard()
-                except Exception as ex:
-                    status_banner.value = f"❌ Błąd logowania: {ex}"
-                    safe_ui_update()
-                finally:
-                    state["is_logging_in"] = False
-
-            threading.Thread(target=_w, daemon=True).start()
-
-        def do_logout(_e=None):
-            stop_playback()
-            state["client"] = None
-            state["streams_cache"].clear()
-            state["categories_cache"] = {"live": None, "vod": None, "series": None}
-            dash_view.visible = False
-            dash_inner_view.visible = False
-            login_view.visible = True
-            state["zone"] = "login"
-            state["login_idx"] = 5
-            refresh_login_button_labels()
-            update_focus_styles()
-            publish_status()
-
-        def apply_profile(prof):
-            mode = prof.get("mode", "xtream")
-            name = prof.get("name", "Zdalna Lista")
-            state["active_profile_name"] = name
-            cache_set("active_profile_name", name)
-
-            if mode == "m3u" or (prof.get("m3u_url") and not prof.get("username")):
-                creds["m3u_url"] = prof.get("m3u_url") or prof.get("url") or ""
-                creds["server"] = "http://"
-                creds["username"] = ""
-                creds["password"] = ""
-            else:
-                creds["server"] = prof.get("server") or prof.get("host") or ""
-                creds["username"] = prof.get("username") or prof.get("user") or ""
-                creds["password"] = prof.get("password") or prof.get("pass") or ""
-                creds["m3u_url"] = ""
-
-            cache_set("server", creds["server"])
-            cache_set("username", creds["username"])
-            cache_set("password", creds["password"])
-            cache_set("m3u_url", creds["m3u_url"])
-            refresh_login_button_labels()
-            do_login(profile_name_hint=name)
 
         # =====================================================================
         # ZDALNE STEROWANIE I ODBIERANIE LIST PRZEZ CLOUD (NTFY.SH)
