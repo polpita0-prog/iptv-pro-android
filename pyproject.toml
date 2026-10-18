@@ -1,18 +1,33 @@
 [project]
-name = "iptv_v4_pro"
-version = "4.4.0"
-description = "IPTV V4.4 PRO Remote Cloud"
+name = "iptv_bp_pro"
+version = "7.5.0"
+description = "IPTV BP V7.5 PRO Android TV"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "flet==0.24.1",
+    "requests>=2.31.0",
 ]
 
 [tool.flet]
-org = "com.iptv.v4pro"
-product = "IPTV V4.4 PRO"
-company = "IPTV Remote Cloud"
+org = "com.iptv.bp"
+product = "IPTV BP"
+company = "IPTV BP Remote Cloud"
 copyright = "Copyright (C) 2026"
+
+[tool.flet.app]
+path = "."
+assets_dir = "assets"
+
+[tool.flet.android]
+adaptive_icon_background = "#ea580c"
+
+[tool.flet.splash]
+color = "#0b1f15"
+dark_color = "#0b1f15"
+web = false
+ios = false
+android = true
 
 [tool.flet.flutter.pubspec.dependency_overrides]
 wakelock_plus = "1.2.8"
