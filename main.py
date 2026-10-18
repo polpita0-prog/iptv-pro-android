@@ -1,23 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-IPTV BP V7.4 PRO - VIVO TV EDITION (Android TV)
-Kompletna, w pełni funkcjonalna wersja produkcyjna:
-1. Brak ft.IconButton = brak samoczynnego otwierania wyszukiwarki po kliknięciu OK.
-2. Stałe 9 slotów (Sliding Viewport) = płynne przewijanie od samej góry do samego dołu okna.
-3. 3-warstwowy bufor page.views = pojedyncze WSTECZ na pilocie nigdy nie zamyka aplikacji.
-4. Odroczony odczyt client_storage = niezawodny start i auto-logowanie za pierwszym razem.
-5. 4 bazy opisów: Xtream VOD/Series Info -> TMDB PL -> Wikipedia PL -> TVMaze / TMDB EN.
+IPTV BP V7.5 PRO - VIVO TV EDITION (Android TV)
+1. Dodany kafelek "🚪 Zamknij" na głównym ekranie Vivo, w prawym panelu i w Menu Ustawień.
+2. Twarde zamykanie procesu Android TV (os._exit(0)).
+3. Automatyczny generator ikony systemowej APK (assets/icon.png) zastępujący logo Flet.
+4. Płynne przewijanie (9 stałych slotów), blokada pojedynczego WSTECZ i 4 bazy opisów.
 """
 
 import base64
 import datetime
 import json
+import os
 import re
+import struct
 import threading
 import time
 import traceback
 from urllib.parse import parse_qs, urlparse
 import uuid
+import zlib
 
 import flet as ft
 import requests
@@ -35,6 +36,48 @@ PL_REGEX = re.compile(
     r"|\b(tvp|polsat|tvn|canal\+|c\+|ale\s*kino|kino\s*polska|planete\+|domo\+|kuchnia\+|teletoon\+|minimini\+|ttv|puls|fokus\s*tv|eska|polo\s*tv|trwam|republika|wpolsce|wydarzenia\s*24|stopklatka|zoom\s*tv|wp\s*tv|nowa\s*tv|metro\s*tv|eleven\s*sports|polsat\s*sport|motowizja|stars\s*tv|kino\s*tv|gametoon|active\s*family|romance\s*tv|13\s*ulica|sci\s*fi|paramount|comedy\s*central|national\s*geographic|discovery|animal\s*planet|tlc|id\s*investigation|hbo|cinemax|filmbox|axn|fox|epic\s*drama|bbc\s*brit|bbc\s*earth|bbc\s*first|bbc\s*lifestyle|viasat|history|crime\s*investigation|sundance|red\s*carpet|antena\s*hd|tv\s*okazje|super\s*polsat|tv4|tv6|polsat\s*news|tvn24|tvp\s*info|biznes24|news24|pogoda24|4fun|vox\s*music|disco\s*polo|power\s*tv|nuta\s*tv|mixtape|hip\s*hop\s*tv)\b",
     re.IGNORECASE,
 )
+
+
+def auto_generate_app_icon_if_missing():
+    """Tworzy plik assets/icon.png oraz assets/icon_android.png przed kompilacją APK."""
+    try:
+        os.makedirs("assets", exist_ok=True)
+        icon_path = os.path.join("assets", "icon.png")
+        if os.path.exists(icon_path):
+            return
+        w, h = 256, 256
+        raw_rows = bytearray()
+        for y in range(h):
+            raw_rows.append(0)
+            for x in range(w):
+                border = x < 14 or x >= w - 14 or y < 14 or y >= h - 14
+                if border:
+                    raw_rows.extend((253, 224, 71, 255))  # Złota ramka (#fde047)
+                else:
+                    # Pomarańczowo-ciemnozielona tarcza IPTV BP
+                    in_center = 48 <= x <= 208 and 64 <= y <= 192
+                    if in_center:
+                        raw_rows.extend((234, 88, 12, 255))  # Pomarańcz (#ea580c)
+                    else:
+                        raw_rows.extend((15, 41, 29, 255))  # Ciemna zieleń Vivo (#0f291d)
+
+        def _chunk(c_type, data):
+            return struct.pack(">I", len(data)) + c_type + data + struct.pack(">I", zlib.crc32(c_type + data) & 0xFFFFFFFF)
+
+        png_bytes = (
+            b"\x89PNG\r\n\x1a\n"
+            + _chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + _chunk(b"IDAT", zlib.compress(bytes(raw_rows), 9))
+            + _chunk(b"IEND", b"")
+        )
+        for fname in ("icon.png", "icon_android.png", "icon_ios.png", "icon_web.png"):
+            with open(os.path.join("assets", fname), "wb") as f:
+                f.write(png_bytes)
+    except Exception:
+        pass
+
+
+auto_generate_app_icon_if_missing()
 
 
 def is_polish_text(text: str) -> bool:
@@ -606,6 +649,7 @@ def main(page: ft.Page):
                     pass
 
         def close_app_cleanly(_e=None):
+            """Natychmiastowe zamknięcie aplikacji na Android TV i Desktopie."""
             stop_event.set()
             for fn in ("window_destroy", "window_close"):
                 try:
@@ -614,6 +658,10 @@ def main(page: ft.Page):
                     pass
             try:
                 page.window.close()
+            except Exception:
+                pass
+            try:
+                os._exit(0)
             except Exception:
                 pass
 
@@ -814,7 +862,7 @@ def main(page: ft.Page):
         footer_playlist_txt = ft.Text("Current Playlist: Brak", size=12, color="#86efac")
         footer_expire_txt = ft.Text(f"Expire: Unlimited  •  ID: {device_id}", size=12, color="#86efac")
         dash_back_hint_txt = ft.Text(
-            "Pilot: Strzałki = wybór kafelka | OK = wejdź | 2x WSTECZ = zamknij program",
+            "Pilot: Strzałki = wybór kafelka | OK = wejdź | Kafelek '🚪 Zamknij' lub 2x WSTECZ = wyjście",
             size=12,
             color="#fbbf24",
             weight=ft.FontWeight.BOLD,
@@ -1051,12 +1099,12 @@ def main(page: ft.Page):
                 safe_ui_update()
             publish_status()
 
-        def make_vivo_tile(title, icon_char, on_click_fn, is_large=False):
+        def make_vivo_tile(title, icon_char, on_click_fn, is_large=False, is_exit=False):
             t_ctrl = ft.Text(title, size=16 if is_large else 13, weight=ft.FontWeight.BOLD, color="white", text_align=ft.TextAlign.CENTER)
             i_ctrl = ft.Text(
                 icon_char,
                 size=34 if is_large else 20,
-                color="#fb923c" if title in ("Live TV", "Ustawienia") else "#34d399",
+                color="#ef4444" if is_exit else ("#fb923c" if title in ("Live TV", "Ustawienia") else "#34d399"),
                 text_align=ft.TextAlign.CENTER,
             )
             layout = (
@@ -1064,22 +1112,23 @@ def main(page: ft.Page):
                 if is_large
                 else ft.Row([i_ctrl, t_ctrl], alignment=ft.MainAxisAlignment.CENTER, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=8)
             )
+            base_bg = "#3f1111" if is_exit else "#112e22"
             box = ft.Container(
                 content=layout,
-                bgcolor="#112e22",
+                bgcolor=base_bg,
                 border_radius=12,
-                border=ft.border.all(1, "#22543d"),
+                border=ft.border.all(1, "#7f1d1d" if is_exit else "#22543d"),
                 padding=8,
                 expand=True,
                 on_click=lambda _: on_click_fn(),
             )
-            box.data = {"title": title, "action": on_click_fn}
+            box.data = {"title": title, "action": on_click_fn, "base_bg": base_bg}
             return box
 
         def render_dashboard_focus():
             for idx, tile in enumerate(dash_tiles):
                 foc = state["zone"] == "dashboard" and state["dash_idx"] == idx
-                tile.bgcolor = "#ea580c" if foc else "#112e22"
+                tile.bgcolor = "#ea580c" if foc else tile.data.get("base_bg", "#112e22")
                 tile.border = ft.border.all(3 if foc else 1, "#fde047" if foc else "#22543d")
             safe_ui_update()
 
@@ -1147,6 +1196,7 @@ def main(page: ft.Page):
             back_to_cats()
             open_settings_menu_dlg()
 
+        # 3 duże kafelki na górze (0, 1, 2) + 5 kafelków na dole (3, 4, 5, 6, 7 - w tym ZAMKNIJ)
         dash_tile_live = make_vivo_tile("Live TV", "📺", lambda: open_section("live"), is_large=True)
         dash_tile_movies = make_vivo_tile("Movies", "🎬", lambda: open_section("vod"), is_large=True)
         dash_tile_series = make_vivo_tile("Series", "🎞", lambda: open_section("series"), is_large=True)
@@ -1154,7 +1204,18 @@ def main(page: ft.Page):
         dash_tile_fav = make_vivo_tile("Ulubione", "⭐", open_favorites_section, is_large=False)
         dash_tile_playlists = make_vivo_tile("Listy", "📋", open_profiles_section, is_large=False)
         dash_tile_settings = make_vivo_tile("Ustawienia", "⚙️", open_settings_from_dashboard, is_large=False)
-        dash_tiles = [dash_tile_live, dash_tile_movies, dash_tile_series, dash_tile_catchup, dash_tile_fav, dash_tile_playlists, dash_tile_settings]
+        dash_tile_exit = make_vivo_tile("Zamknij", "🚪", close_app_cleanly, is_large=False, is_exit=True)
+
+        dash_tiles = [
+            dash_tile_live,       # 0
+            dash_tile_movies,     # 1
+            dash_tile_series,     # 2
+            dash_tile_catchup,    # 3
+            dash_tile_fav,        # 4
+            dash_tile_playlists,  # 5
+            dash_tile_settings,   # 6
+            dash_tile_exit,       # 7
+        ]
 
         def refresh_current_list(_e=None):
             if not state["client"]:
@@ -1425,25 +1486,26 @@ def main(page: ft.Page):
             cur_it = state.get("current_item")
             fav_lbl = "⭐ Usuń bieżącą pozycję z Ulubionych" if (cur_it and is_favorite(cur_it)) else "⭐ Dodaj bieżącą pozycję do Ulubionych"
 
-            b_s_fav = make_tv_button(fav_lbl, lambda: (close_settings_panel(), toggle_favorite()), height=38)
+            b_s_fav = make_tv_button(fav_lbl, lambda: (close_settings_panel(), toggle_favorite()), height=36)
             b_s_pl = make_tv_button(
                 f"🇵🇱 Filtr 'Tylko Polskie': {'WŁĄCZONY' if state['only_pl'] else 'WYŁĄCZONY'}",
                 lambda: (toggle_only_pl(), _rebuild()),
-                height=38,
+                height=36,
             )
-            b_s_vmode = make_tv_button(VLC_MODE_LABELS[state["vlc_mode"]], lambda: (cycle_vlc_mode(), _rebuild()), height=38)
+            b_s_vmode = make_tv_button(VLC_MODE_LABELS[state["vlc_mode"]], lambda: (cycle_vlc_mode(), _rebuild()), height=36)
             b_s_autovlc = make_tv_button(
                 f"🚀 Auto-start VLC po kliknięciu OK: {'WŁ.' if state['auto_vlc'] else 'WYŁ.'}",
                 lambda: (toggle_auto_vlc(), _rebuild()),
-                height=38,
+                height=36,
             )
-            b_s_search = make_tv_button("🔍 Szukaj / Filtruj kanały i filmy", lambda: (close_settings_panel(), open_search_dialog()), height=38)
-            b_s_refresh = make_tv_button("🔄 Odśwież listę i wyczyść bufor RAM", lambda: (close_settings_panel(), refresh_current_list()), height=38)
-            b_s_cloud = make_tv_button(f"🌐 Zmień Kod ID / Nazwę odbiornika ({device_id})", lambda: (close_settings_panel(), open_remote_settings_dlg()), height=38)
-            b_s_logout = make_tv_button("⇄ Zmień konto / Wyloguj do ekranu startowego", lambda: (close_settings_panel(), do_logout()), height=38)
-            b_s_close = make_tv_button("↩ Zamknij ustawienia (wróć do listy)", close_settings_panel, height=38)
+            b_s_search = make_tv_button("🔍 Szukaj / Filtruj kanały i filmy", lambda: (close_settings_panel(), open_search_dialog()), height=36)
+            b_s_refresh = make_tv_button("🔄 Odśwież listę i wyczyść bufor RAM", lambda: (close_settings_panel(), refresh_current_list()), height=36)
+            b_s_cloud = make_tv_button(f"🌐 Zmień Kod ID / Nazwę odbiornika ({device_id})", lambda: (close_settings_panel(), open_remote_settings_dlg()), height=36)
+            b_s_logout = make_tv_button("⇄ Zmień konto / Wyloguj do ekranu startowego", lambda: (close_settings_panel(), do_logout()), height=36)
+            b_s_exit = make_tv_button("🚪 Zamknij aplikację całkowicie", close_app_cleanly, height=36)
+            b_s_close = make_tv_button("↩ Wróć do listy", close_settings_panel, height=36)
 
-            settings_menu_buttons.extend([b_s_fav, b_s_pl, b_s_vmode, b_s_autovlc, b_s_search, b_s_refresh, b_s_cloud, b_s_logout, b_s_close])
+            settings_menu_buttons.extend([b_s_fav, b_s_pl, b_s_vmode, b_s_autovlc, b_s_search, b_s_refresh, b_s_cloud, b_s_logout, b_s_exit, b_s_close])
             settings_panel_col.controls.append(
                 ft.Text("⚙️ MENU USTAWIEŃ (⬆️ ⬇️ i OK, WSTECZ = zamknij)", size=14, weight=ft.FontWeight.BOLD, color="#fbbf24")
             )
@@ -1467,10 +1529,12 @@ def main(page: ft.Page):
             video_placeholder.visible, settings_overlay_box.visible = False, True
             style_settings_menu()
 
+        # Prawy panel: 4 przyciski (w tym bezpośredni przycisk Zamknij)
         btn_vlc = make_tv_button("🚀 Uruchom w VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"]), height=42, expand=True)
-        btn_settings_menu = make_tv_button("⚙️ Menu Ustawień", open_settings_menu_dlg, height=42, expand=True)
-        btn_home = make_tv_button("🏠 Ekran Główny", open_dashboard, height=42, expand=True)
-        right_buttons = [btn_vlc, btn_settings_menu, btn_home]
+        btn_settings_menu = make_tv_button("⚙️ Ustawienia", open_settings_menu_dlg, height=42, expand=True)
+        btn_home = make_tv_button("🏠 Menu Główne", open_dashboard, height=42, expand=True)
+        btn_exit_right = make_tv_button("🚪 Zamknij", close_app_cleanly, height=42, expand=True)
+        right_buttons = [btn_vlc, btn_settings_menu, btn_home, btn_exit_right]
 
         btn_remote_id = make_tv_button(f"🌐 Kod ID Odbiornika: {device_id} ({device_name})", open_remote_settings_dlg, height=42)
         btn_edit_srv = make_tv_button("🌐 Serwer: http://", lambda: open_field_editor("server", "Adres serwera (http://...)"), height=42)
@@ -1486,7 +1550,7 @@ def main(page: ft.Page):
             content=ft.Column(
                 [
                     ft.Row(
-                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V7.4 PRO", size=22, weight=ft.FontWeight.BOLD, color="#fb923c")],
+                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V7.5 PRO", size=22, weight=ft.FontWeight.BOLD, color="#fb923c")],
                         alignment=ft.MainAxisAlignment.CENTER,
                         spacing=12,
                     ),
@@ -1525,7 +1589,7 @@ def main(page: ft.Page):
                     ft.Column(
                         [
                             ft.Row([dash_tile_live, dash_tile_movies, dash_tile_series], spacing=12, expand=5),
-                            ft.Row([dash_tile_catchup, dash_tile_fav, dash_tile_playlists, dash_tile_settings], spacing=12, expand=2),
+                            ft.Row([dash_tile_catchup, dash_tile_fav, dash_tile_playlists, dash_tile_settings, dash_tile_exit], spacing=10, expand=2),
                         ],
                         spacing=10,
                         expand=True,
@@ -1667,7 +1731,7 @@ def main(page: ft.Page):
                 for i, item in enumerate(login_items):
                     foc = state["zone"] == "login" and state["login_idx"] == i
                     bt = item.data["base_text"]
-                    item.bgcolor = "#ea580c" if foc else ("#059669" if i == 5 else "#163828")
+                    item.bgcolor = "#ea580c" if foc else ("#059669" if i == 5 else ("#7f1d1d" if i == 7 else "#163828"))
                     item.border = ft.border.all(3 if foc else 1, "#fde047" if foc else "#22543d")
                     item.data["text_ctrl"].color = "white"
                     item.data["text_ctrl"].value = f"▶  {bt}" if foc else bt
@@ -1686,7 +1750,7 @@ def main(page: ft.Page):
 
             for i, b in enumerate(right_buttons):
                 foc, bt = (state["zone"] == "right" and state["right_idx"] == i), b.data["base_text"]
-                b.bgcolor = "#ea580c" if foc else "#163828"
+                b.bgcolor = "#ea580c" if foc else ("#7f1d1d" if i == 3 else "#163828")
                 b.border = ft.border.all(3 if foc else 1, "#fde047" if foc else "#22543d")
                 b.data["text_ctrl"].color = "white"
                 b.data["text_ctrl"].value = f"▶ {bt}" if foc else bt
@@ -1993,7 +2057,7 @@ def main(page: ft.Page):
                     close_app_cleanly()
                 else:
                     app_state["last_back_press_ts"] = now
-                    dash_back_hint_txt.value = "⚠️ Naciśnij WSTECZ jeszcze raz (w ciągu 2.5 sek.), aby zamknąć IPTV BP!"
+                    dash_back_hint_txt.value = "⚠️ Naciśnij WSTECZ jeszcze raz (lub kliknij kafelek '🚪 Zamknij'), aby wyjść!"
                     dash_back_hint_txt.color = "#ef4444"
                     status_banner.value = "⚠️ Naciśnij WSTECZ jeszcze raz, aby zamknąć aplikację!"
                     status_banner.color = "#ef4444"
@@ -2061,9 +2125,9 @@ def main(page: ft.Page):
                 elif key == "Arrow Left" and state["dash_idx"] > 0:
                     state["dash_idx"] -= 1
                 elif key == "Arrow Down" and state["dash_idx"] < 3:
-                    state["dash_idx"] = min(6, state["dash_idx"] + 3)
+                    state["dash_idx"] = min(len(dash_tiles) - 1, state["dash_idx"] + 3)
                 elif key == "Arrow Up" and state["dash_idx"] >= 3:
-                    state["dash_idx"] = max(0, state["dash_idx"] - 3)
+                    state["dash_idx"] = max(0, min(2, state["dash_idx"] - 3))
                 elif key in ("Enter", "Select", " "):
                     now = time.time()
                     if now - app_state["last_ok_ts"] < 0.25:
@@ -2194,4 +2258,5 @@ def main(page: ft.Page):
         page.update()
 
 
-ft.app(target=main)
+if __name__ == "__main__":
+    ft.app(target=main, assets_dir="assets")
