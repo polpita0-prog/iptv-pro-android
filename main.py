@@ -1,18 +1,8 @@
 # -*- coding: utf-8 -*-
-"""
-IPTV BP V7.7 PRO - VIVO TV EDITION (Android TV)
-Nowości w V7.7:
-1. LUPA WYSZUKIWANIA (🔍) W GÓRNYM PASKU I NAD LISTĄ OBSŁUGIWANA PILOTEM:
-   - Na ekranie głównym strzałka W GÓRĘ (⬆️) wjeżdża na górne ikony: 🔍 Lupa, 👤 Konto, ⚙️ Ustawienia.
-   - Dodatkowy duży kafelek "🔍 Szukaj" na ekranie głównym.
-   - Stały przycisk "🔍 SZUKAJ" nad listą po lewej stronie oraz pod oknem opisu po prawej.
-2. WBUDOWANY PANEL WYSZUKIWARKI (BEZ BLOKUJĄCYCH OKIEN DIALOGOWYCH):
-   - Pozwala jednym kliknięciem przeszukać Kanały TV, Filmy VOD, Seriale lub przefiltrować obecną kategorię.
-"""
-
 import base64
 import datetime
 import json
+import os
 import re
 import threading
 import time
@@ -251,7 +241,7 @@ class XtreamClient:
                 return self.user_info
             except Exception as e:
                 last_err = e
-                time.sleep(0.4)
+                time.sleep(0.3)
         raise last_err
 
     def get_categories(self, kind):
@@ -669,10 +659,19 @@ def main(page: ft.Page):
             except Exception:
                 pass
 
-        def close_app_cleanly(_e=None):
+        # Pewne zamykanie procesu na Android TV
+        def force_exit_app(_e=None):
             stop_event.set()
             try:
-                page.window_destroy()
+                page.window.prevent_close = False
+            except Exception:
+                pass
+            try:
+                page.window_prevent_close = False
+            except Exception:
+                pass
+            try:
+                page.window.close()
             except Exception:
                 pass
             try:
@@ -680,9 +679,15 @@ def main(page: ft.Page):
             except Exception:
                 pass
             try:
-                page.window.close()
+                page.window_destroy()
             except Exception:
                 pass
+
+            def _kill():
+                time.sleep(0.15)
+                os._exit(0)
+
+            threading.Thread(target=_kill, daemon=True).start()
 
         def on_lifecycle_change(e: ft.AppLifecycleStateChangeEvent):
             st_str = str(e.data).lower()
@@ -825,9 +830,9 @@ def main(page: ft.Page):
             "auto_login": bool(auto_login_saved),
             "is_logging_in": False,
             "vlc_mode": saved_vlc_mode,
-            "zone": "dashboard",  # dashboard | dash_top | list | list_search | right
+            "zone": "dashboard",
             "dash_idx": 0,
-            "dash_top_idx": 0,  # 0: Lupa (🔍), 1: Konto (👤), 2: Ustawienia (⚙️)
+            "dash_top_idx": 0,
             "list_idx": 0,
             "right_idx": 0,
             "settings_idx": 0,
@@ -904,6 +909,7 @@ def main(page: ft.Page):
                 return cl.pl_cat_ids.get(state["kind"], set())
             return set()
 
+        # Każdy przycisk ma autofocus=False, aby Flet nie dublował kliknięć z on_keyboard_event
         def make_tv_button(text_str, on_click_fn, key_str=None, height=42, expand=False, item_ref=None):
             txt_ctrl = ft.Text(
                 text_str,
@@ -942,7 +948,7 @@ def main(page: ft.Page):
         footer_playlist_txt = ft.Text("Current Playlist: Brak", size=12, color="#86efac")
         footer_expire_txt = ft.Text(f"Expire: Unlimited  •  ID: {device_id}", size=12, color="#86efac")
         dash_back_hint_txt = ft.Text(
-            "Pilot: ⬆️ Górny pasek (🔍 Lupa / ⚙️ Ustawienia) | OK = wybierz | 2x WSTECZ = wyjdź",
+            "Pilot: Strzałki = wybór | OK = zatwierdź | 2x WSTECZ lub 🚪 ZAMKNIJ = wyjdź",
             size=12,
             color="#fbbf24",
             weight=ft.FontWeight.BOLD,
@@ -967,9 +973,6 @@ def main(page: ft.Page):
 
         threading.Thread(target=update_clock_loop, daemon=True).start()
 
-        # =====================================================================
-        # DUŻE OKNO INFORMACYJNE PO PRAWEJ STRONIE
-        # =====================================================================
         poster_img = ft.Image(
             src="",
             width=180,
@@ -1031,7 +1034,7 @@ def main(page: ft.Page):
             spacing=16,
         )
 
-        settings_panel_col = ft.Column([], spacing=6, expand=True)
+        settings_panel_col = ft.Column([], spacing=5, expand=True)
         settings_overlay_box = ft.Container(
             content=settings_panel_col,
             expand=True,
@@ -1042,7 +1045,7 @@ def main(page: ft.Page):
             visible=False,
         )
 
-        search_panel_col = ft.Column([], spacing=8, expand=True)
+        search_panel_col = ft.Column([], spacing=6, expand=True)
         search_overlay_box = ft.Container(
             content=search_panel_col,
             expand=True,
@@ -1256,9 +1259,6 @@ def main(page: ft.Page):
                 safe_ui_update()
             publish_status()
 
-        # =====================================================================
-        # WBUDOWANY PANEL LUPY WYSZUKIWANIA (PEŁNA OBSŁUGA PILOTEM ANDROID TV)
-        # =====================================================================
         search_menu_buttons = []
         search_tf_input = ft.TextField(
             label="Wpisz szukaną nazwę (np. TVN, HBO, Batman)...",
@@ -1311,7 +1311,6 @@ def main(page: ft.Page):
                     build_full_list_data()
 
         def open_search_panel(_e=None):
-            # Jeśli wywołano z ekranu głównego, przejdź do widoku wewnętrznego z otwartą lupą
             if state["in_dashboard"]:
                 state["in_dashboard"] = False
                 dash_view.visible = False
@@ -1343,13 +1342,13 @@ def main(page: ft.Page):
 
             search_tf_input.on_submit = lambda _: execute_global_search(None)
 
-            b_kbd = make_tv_button("⌨️ WPISZ TEKST (Otwórz klawiaturę ekranową)", _focus_keyboard, height=40)
-            b_cur = make_tv_button("🔎 Filtruj bieżącą listę po wpisanej frazie", lambda: execute_global_search(None), height=40)
-            b_live = make_tv_button("📺 Szukaj we wszystkich Kanałach TV na żywo", lambda: execute_global_search("live"), height=40)
-            b_vod = make_tv_button("🎬 Szukaj we wszystkich Filmach VOD", lambda: execute_global_search("vod"), height=40)
-            b_ser = make_tv_button("🎞 Szukaj we wszystkich Serialach", lambda: execute_global_search("series"), height=40)
-            b_clr = make_tv_button("❌ Wyczyść filtr wyszukiwania (Pokaż wszystko)", _clear_and_close, height=40)
-            b_cls = make_tv_button("↩ Zamknij wyszukiwarkę", close_search_panel, height=40)
+            b_kbd = make_tv_button("⌨️ WPISZ TEKST (Otwórz klawiaturę ekranową)", _focus_keyboard, height=38)
+            b_cur = make_tv_button("🔎 Filtruj bieżącą listę po wpisanej frazie", lambda: execute_global_search(None), height=38)
+            b_live = make_tv_button("📺 Szukaj we wszystkich Kanałach TV na żywo", lambda: execute_global_search("live"), height=38)
+            b_vod = make_tv_button("🎬 Szukaj we wszystkich Filmach VOD", lambda: execute_global_search("vod"), height=38)
+            b_ser = make_tv_button("🎞 Szukaj we wszystkich Serialach", lambda: execute_global_search("series"), height=38)
+            b_clr = make_tv_button("❌ Wyczyść filtr wyszukiwania (Pokaż wszystko)", _clear_and_close, height=38)
+            b_cls = make_tv_button("↩ Zamknij wyszukiwarkę", close_search_panel, height=38)
 
             search_menu_buttons.extend([b_kbd, b_cur, b_live, b_vod, b_ser, b_clr, b_cls])
 
@@ -1374,26 +1373,20 @@ def main(page: ft.Page):
             search_overlay_box.visible = True
             style_search_menu()
 
-        # =====================================================================
-        # GÓRNY PASEK IKON EKRANU GŁÓWNEGO VIVO (🔍 LUPA | 👤 KONTO | ⚙️ USTAWIENIA)
-        # =====================================================================
-        def make_top_pill_btn(icon_emoji, label_str, on_click_fn):
-            txt_c = ft.Text(f"{icon_emoji} {label_str}", size=14, weight=ft.FontWeight.BOLD, color="white")
+        def make_top_pill_btn(icon_emoji, label_str, on_click_fn, is_danger=False):
+            txt_c = ft.Text(f"{icon_emoji} {label_str}", size=13, weight=ft.FontWeight.BOLD, color="white")
             box = ft.Container(
                 content=txt_c,
-                padding=ft.padding.symmetric(horizontal=14, vertical=8),
+                padding=ft.padding.symmetric(horizontal=12, vertical=7),
                 border_radius=20,
-                bgcolor="#163828",
-                border=ft.border.all(1, "#34d399"),
+                bgcolor="#7f1d1d" if is_danger else "#163828",
+                border=ft.border.all(1, "#ef4444" if is_danger else "#34d399"),
                 on_click=lambda _: on_click_fn(),
             )
-            box.data = {"text_ctrl": txt_c, "action": on_click_fn}
+            box.data = {"text_ctrl": txt_c, "action": on_click_fn, "danger": is_danger}
             return box
 
-        # =====================================================================
-        # KAFELKI EKRANU GŁÓWNEGO VIVO
-        # =====================================================================
-        def make_vivo_tile(title, icon_char, on_click_fn, is_large=False):
+        def make_vivo_tile(title, icon_char, on_click_fn, is_large=False, is_danger=False):
             t_ctrl = ft.Text(
                 title,
                 size=16 if is_large else 13,
@@ -1403,8 +1396,8 @@ def main(page: ft.Page):
             )
             i_ctrl = ft.Text(
                 icon_char,
-                size=34 if is_large else 20,
-                color="#fb923c" if title in ("Live TV", "Szukaj", "Ustawienia") else "#34d399",
+                size=34 if is_large else 19,
+                color="#fca5a5" if is_danger else ("#fb923c" if title in ("Live TV", "Szukaj", "Ustawienia") else "#34d399"),
                 text_align=ft.TextAlign.CENTER,
             )
             content_layout = (
@@ -1424,14 +1417,14 @@ def main(page: ft.Page):
             )
             box = ft.Container(
                 content=content_layout,
-                bgcolor="#112e22",
+                bgcolor="#7f1d1d" if is_danger else "#112e22",
                 border_radius=12,
-                border=ft.border.all(1, "#22543d"),
+                border=ft.border.all(2 if is_danger else 1, "#ef4444" if is_danger else "#22543d"),
                 padding=8,
                 expand=True,
                 on_click=lambda _: on_click_fn(),
             )
-            box.data = {"title": title, "action": on_click_fn}
+            box.data = {"title": title, "action": on_click_fn, "danger": is_danger}
             return box
 
         def open_dashboard():
@@ -1544,16 +1537,18 @@ def main(page: ft.Page):
         dash_tile_fav = make_vivo_tile("Ulubione", "⭐", open_favorites_section, is_large=False)
         dash_tile_playlists = make_vivo_tile("Listy", "📋", open_profiles_section, is_large=False)
         dash_tile_settings = make_vivo_tile("Ustawienia", "⚙️", open_settings_from_dashboard, is_large=False)
+        dash_tile_exit = make_vivo_tile("ZAMKNIJ", "🚪", force_exit_app, is_large=False, is_danger=True)
 
         dash_tiles = [
             dash_tile_live,       # 0
             dash_tile_movies,     # 1
             dash_tile_series,     # 2
-            dash_tile_search,     # 3 (Lupa Wyszukiwania)
+            dash_tile_search,     # 3
             dash_tile_catchup,    # 4
             dash_tile_fav,        # 5
             dash_tile_playlists,  # 6
             dash_tile_settings,   # 7
+            dash_tile_exit,       # 8
         ]
 
         def refresh_current_list(_e=None):
@@ -1631,9 +1626,6 @@ def main(page: ft.Page):
             dlg.open = True
             safe_ui_update()
 
-        # =====================================================================
-        # LOGOWANIE, WYLOGOWANIE I PRZEŁĄCZANIE PROFILI
-        # =====================================================================
         def refresh_login_button_labels():
             set_tv_button_text(btn_remote_id, f"🌐 Kod ID Odbiornika: {device_id} ({device_name})")
             set_tv_button_text(btn_edit_srv, f"🌐 Serwer: {creds['server'] or 'ustaw'}")
@@ -1842,9 +1834,6 @@ def main(page: ft.Page):
             dlg.open = True
             safe_ui_update()
 
-        # =====================================================================
-        # WBUDOWANY PANEL MENU USTAWIEŃ
-        # =====================================================================
         settings_menu_buttons = []
 
         def close_settings_panel():
@@ -1897,15 +1886,16 @@ def main(page: ft.Page):
             cur_it = state.get("current_item")
             fav_lbl = "⭐ Usuń bieżącą pozycję z Ulubionych" if (cur_it and is_favorite(cur_it)) else "⭐ Dodaj bieżącą pozycję do Ulubionych"
 
-            b_s_fav = make_tv_button(fav_lbl, _act_fav, height=40)
-            b_s_pl = make_tv_button(f"🇵🇱 Filtr 'Tylko Polskie': {'WŁĄCZONY' if state['only_pl'] else 'WYŁĄCZONY'}", _act_only_pl, height=40)
-            b_s_vmode = make_tv_button(VLC_MODE_LABELS[state["vlc_mode"]], _act_vlc_mode, height=40)
-            b_s_autovlc = make_tv_button(f"🚀 Auto-start VLC po kliknięciu OK: {'WŁ.' if state['auto_vlc'] else 'WYŁ.'}", _act_auto_vlc, height=40)
-            b_s_search = make_tv_button("🔍 Otwórz wyszukiwarkę (Lupa)", _act_search, height=40)
-            b_s_refresh = make_tv_button("🔄 Odśwież listę i wyczyść bufor RAM", _act_refresh, height=40)
-            b_s_cloud = make_tv_button(f"🌐 Zmień Kod ID / Nazwę odbiornika ({device_id})", _act_cloud, height=40)
-            b_s_logout = make_tv_button("⇄ Zmień konto / Wyloguj do ekranu startowego", _act_logout, height=40)
-            b_s_close = make_tv_button("↩ Zamknij ustawienia (wróć do listy)", close_settings_panel, height=40)
+            b_s_fav = make_tv_button(fav_lbl, _act_fav, height=36)
+            b_s_pl = make_tv_button(f"🇵🇱 Filtr 'Tylko Polskie': {'WŁĄCZONY' if state['only_pl'] else 'WYŁĄCZONY'}", _act_only_pl, height=36)
+            b_s_vmode = make_tv_button(VLC_MODE_LABELS[state["vlc_mode"]], _act_vlc_mode, height=36)
+            b_s_autovlc = make_tv_button(f"🚀 Auto-start VLC po kliknięciu OK: {'WŁ.' if state['auto_vlc'] else 'WYŁ.'}", _act_auto_vlc, height=36)
+            b_s_search = make_tv_button("🔍 Otwórz wyszukiwarkę (Lupa)", _act_search, height=36)
+            b_s_refresh = make_tv_button("🔄 Odśwież listę i wyczyść bufor RAM", _act_refresh, height=36)
+            b_s_cloud = make_tv_button(f"🌐 Zmień Kod ID / Nazwę odbiornika ({device_id})", _act_cloud, height=36)
+            b_s_logout = make_tv_button("⇄ Zmień konto / Wyloguj do ekranu startowego", _act_logout, height=36)
+            b_s_exit = make_tv_button("🚪 ZAMKNIJ APLIKACJĘ (Wyjdź do Android TV)", force_exit_app, height=36)
+            b_s_close = make_tv_button("↩ Zamknij ustawienia (wróć do listy)", close_settings_panel, height=36)
 
             settings_menu_buttons.extend([
                 b_s_fav,
@@ -1916,11 +1906,12 @@ def main(page: ft.Page):
                 b_s_refresh,
                 b_s_cloud,
                 b_s_logout,
+                b_s_exit,
                 b_s_close,
             ])
 
             settings_panel_col.controls.append(
-                ft.Text("⚙️ MENU USTAWIEŃ (steruj strzałkami ⬆️ ⬇️ i OK, WSTECZ = zamknij)", size=15, weight=ft.FontWeight.BOLD, color="#fbbf24")
+                ft.Text("⚙️ MENU USTAWIEŃ (steruj strzałkami ⬆️ ⬇️ i OK, WSTECZ = zamknij)", size=14, weight=ft.FontWeight.BOLD, color="#fbbf24")
             )
             settings_panel_col.controls.extend(settings_menu_buttons)
 
@@ -1934,7 +1925,7 @@ def main(page: ft.Page):
                 for i, b in enumerate(settings_menu_buttons):
                     foc = (i == state["settings_idx"])
                     base_t = b.data["base_text"]
-                    b.bgcolor = "#ea580c" if foc else "#163828"
+                    b.bgcolor = "#ea580c" if foc else ("#7f1d1d" if b == b_s_exit else "#163828")
                     b.border = ft.border.all(3 if foc else 1, "#fde047" if foc else "#22543d")
                     b.data["text_ctrl"].color = "white"
                     b.data["text_ctrl"].value = f"▶  {base_t}" if foc else base_t
@@ -1945,44 +1936,44 @@ def main(page: ft.Page):
             settings_overlay_box.visible = True
             style_settings_menu()
 
-        # Górne przyciski w kapsułce na ekranie głównym (wzór Vivo Player: 🔍 Lupa | 👤 Konto | ⚙️ Ustawienia)
         top_btn_lupa = make_top_pill_btn("🔍", "Szukaj", open_search_panel)
         top_btn_user = make_top_pill_btn("👤", "Konto", do_logout)
         top_btn_sett = make_top_pill_btn("⚙️", "Ustawienia", open_settings_from_dashboard)
-        dash_top_buttons = [top_btn_lupa, top_btn_user, top_btn_sett]
+        top_btn_exit = make_top_pill_btn("🚪", "ZAMKNIJ", force_exit_app, is_danger=True)
+        dash_top_buttons = [top_btn_lupa, top_btn_user, top_btn_sett, top_btn_exit]
 
         def render_dashboard_focus():
             for idx, b_top in enumerate(dash_top_buttons):
                 foc_top = (state["zone"] == "dash_top" and state["dash_top_idx"] == idx)
-                b_top.bgcolor = "#ea580c" if foc_top else "#163828"
-                b_top.border = ft.border.all(3 if foc_top else 1, "#fde047" if foc_top else "#34d399")
+                is_d = b_top.data.get("danger", False)
+                b_top.bgcolor = "#ea580c" if foc_top else ("#7f1d1d" if is_d else "#163828")
+                b_top.border = ft.border.all(3 if foc_top else 1, "#fde047" if foc_top else ("#ef4444" if is_d else "#34d399"))
 
             for idx, tile in enumerate(dash_tiles):
                 is_foc = (state["zone"] == "dashboard" and state["dash_idx"] == idx)
+                is_d = tile.data.get("danger", False)
                 if is_foc:
-                    tile.bgcolor = "#ea580c"
+                    tile.bgcolor = "#dc2626" if is_d else "#ea580c"
                     tile.border = ft.border.all(3, "#fde047")
                 else:
-                    tile.bgcolor = "#112e22"
-                    tile.border = ft.border.all(1, "#22543d")
+                    tile.bgcolor = "#7f1d1d" if is_d else "#112e22"
+                    tile.border = ft.border.all(2 if is_d else 1, "#ef4444" if is_d else "#22543d")
             safe_ui_update()
 
-        # Stały przycisk Lupy nad listą kanałów/kategorii po lewej stronie
         btn_left_top_search = make_tv_button(
             "🔍 SZUKAJ KANAŁU, FILMU LUB SERIALU...",
             open_search_panel,
             height=42,
         )
 
-        # Prawy panel: 4 przyciski pod oknem informacyjnym (w tym Lupa 🔍 Szukaj)
-        btn_vlc = make_tv_button("🚀 Uruchom VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"]), height=42, expand=True)
+        btn_vlc = make_tv_button("🚀 VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"]), height=42, expand=True)
         btn_search_right = make_tv_button("🔍 Szukaj", open_search_panel, height=42, expand=True)
         btn_settings_menu = make_tv_button("⚙️ Ustawienia", open_settings_menu_dlg, height=42, expand=True)
         btn_home = make_tv_button("🏠 Menu", open_dashboard, height=42, expand=True)
+        btn_exit_right = make_tv_button("🚪 ZAMKNIJ", force_exit_app, height=42, expand=True)
 
-        right_buttons = [btn_vlc, btn_search_right, btn_settings_menu, btn_home]
+        right_buttons = [btn_vlc, btn_search_right, btn_settings_menu, btn_home, btn_exit_right]
 
-        # Ekran Logowania IPTV BP
         btn_remote_id = make_tv_button(f"🌐 Kod ID Odbiornika: {device_id} ({device_name})", open_remote_settings_dlg, height=42)
         btn_edit_srv = make_tv_button(f"🌐 Serwer: {creds['server'] or 'ustaw'}", lambda: open_field_editor("server", "Adres serwera (http://...)"), height=42)
         btn_edit_usr = make_tv_button(f"👤 Login: {creds['username'] or 'ustaw'}", lambda: open_field_editor("username", "Nazwa użytkownika"), height=42)
@@ -1990,7 +1981,7 @@ def main(page: ft.Page):
         btn_edit_m3u = make_tv_button(f"📋 Link M3U: {'[Zapisano]' if creds['m3u_url'] else 'opcjonalnie'}", lambda: open_field_editor("m3u_url", "Pełny link M3U"), height=42)
         btn_submit_login = make_tv_button("🚀 ZALOGUJ DO IPTV BP", lambda: do_login(), height=48)
         btn_saved_profiles_login = make_tv_button(f"📋 WYBIERZ ZAPISANĄ LISTĘ ({len(profiles)})", open_profiles_dialog_from_login, height=42)
-        btn_exit_login = make_tv_button("🚪 ZAMKNIJ APLIKACJĘ", close_app_cleanly, height=40)
+        btn_exit_login = make_tv_button("🚪 ZAMKNIJ APLIKACJĘ", force_exit_app, height=42)
 
         login_items = [
             btn_remote_id,             # 0
@@ -2007,7 +1998,7 @@ def main(page: ft.Page):
             content=ft.Column(
                 [
                     ft.Row(
-                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V7.7 PRO", size=22, weight=ft.FontWeight.BOLD, color="#fb923c")],
+                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V7.9 PRO", size=22, weight=ft.FontWeight.BOLD, color="#fb923c")],
                         alignment=ft.MainAxisAlignment.CENTER,
                         spacing=12,
                     ),
@@ -2026,7 +2017,6 @@ def main(page: ft.Page):
             padding=16,
         )
 
-        # Główny interfejs Vivo Dashboard (z kapsułką 🔍 Szukaj | 👤 Konto | ⚙️ Ustawienia w prawym górnym rogu)
         dash_view = ft.Container(
             content=ft.Column(
                 [
@@ -2047,7 +2037,7 @@ def main(page: ft.Page):
                     ft.Column(
                         [
                             ft.Row([dash_tile_live, dash_tile_movies, dash_tile_series], spacing=12, expand=5),
-                            ft.Row([dash_tile_search, dash_tile_catchup, dash_tile_fav, dash_tile_playlists, dash_tile_settings], spacing=10, expand=2),
+                            ft.Row([dash_tile_search, dash_tile_catchup, dash_tile_fav, dash_tile_playlists, dash_tile_settings, dash_tile_exit], spacing=8, expand=2),
                         ],
                         spacing=10,
                         expand=True,
@@ -2056,13 +2046,6 @@ def main(page: ft.Page):
                         [
                             ft.Column([footer_playlist_txt, footer_expire_txt], spacing=2),
                             dash_back_hint_txt,
-                            ft.Row(
-                                [
-                                    ft.IconButton(icon="refresh", icon_color="#34d399", on_click=lambda e: refresh_current_list(e)),
-                                    ft.IconButton(icon="power_settings_new", icon_color="#ef4444", on_click=lambda e: close_app_cleanly(e)),
-                                ],
-                                spacing=6,
-                            ),
                         ],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -2134,17 +2117,37 @@ def main(page: ft.Page):
             padding=10,
         )
 
-        page.add(login_view, dash_view, dash_inner_view)
+        # =====================================================================
+        # POTRÓJNY STOS WIDOKÓW (PEWNA BLOKADA WYCHODZENIA 1 KLIKNIĘCIEM WSTECZ)
+        # =====================================================================
+        guard_view_1 = ft.View(route="/g1", controls=[ft.Container(bgcolor="#0b1f15", expand=True)], padding=0, bgcolor="#0b1f15")
+        guard_view_2 = ft.View(route="/g2", controls=[ft.Container(bgcolor="#0b1f15", expand=True)], padding=0, bgcolor="#0b1f15")
+        main_app_view = ft.View(
+            route="/app",
+            controls=[
+                ft.Stack(
+                    [
+                        login_view,
+                        dash_view,
+                        dash_inner_view,
+                    ],
+                    expand=True,
+                )
+            ],
+            padding=0,
+            bgcolor="#0b1f15",
+        )
 
-        # =====================================================================
-        # DYNAMICZNY VIEWPORT LISTY PO LEWEJ STRONIE
-        # =====================================================================
+        page.views.clear()
+        page.views.append(guard_view_1)
+        page.views.append(guard_view_2)
+        page.views.append(main_app_view)
+
         def render_viewport():
             items = state["all_built_items"]
             total = len(items)
             list_column.controls.clear()
 
-            # Stylizacja stałego paska Lupy nad listą
             is_search_foc = (state["zone"] == "list_search")
             base_s_txt = btn_left_top_search.data["base_text"]
             btn_left_top_search.bgcolor = "#ea580c" if is_search_foc else "#112e22"
@@ -2204,7 +2207,7 @@ def main(page: ft.Page):
                 for i, item in enumerate(login_items):
                     is_foc = (state["zone"] == "login" and state["login_idx"] == i)
                     base_t = item.data["base_text"]
-                    item.bgcolor = "#ea580c" if is_foc else ("#059669" if i == 5 else "#163828")
+                    item.bgcolor = "#ea580c" if is_foc else ("#059669" if i == 5 else ("#7f1d1d" if i == 7 else "#163828"))
                     item.border = ft.border.all(3 if is_foc else 1, "#fde047" if is_foc else "#22543d")
                     item.data["text_ctrl"].color = "white"
                     item.data["text_ctrl"].value = f"▶  {base_t}" if is_foc else base_t
@@ -2230,7 +2233,7 @@ def main(page: ft.Page):
             for i, b in enumerate(right_buttons):
                 is_foc = (state["zone"] == "right" and state["right_idx"] == i)
                 base_t = b.data["base_text"]
-                b.bgcolor = "#ea580c" if is_foc else "#163828"
+                b.bgcolor = "#ea580c" if is_foc else ("#7f1d1d" if b == btn_exit_right else "#163828")
                 b.border = ft.border.all(3 if is_foc else 1, "#fde047" if is_foc else "#22543d")
                 b.data["text_ctrl"].color = "white"
                 b.data["text_ctrl"].value = f"▶ {base_t}" if is_foc else base_t
@@ -2475,9 +2478,6 @@ def main(page: ft.Page):
             url = state["client"].build_stream_url(k, item.get("stream_id"), ext, item=item)
             play_stream_url(url, title, item=item)
 
-        # =====================================================================
-        # ZDALNE STEROWANIE I ODBIERANIE LIST PRZEZ CLOUD (NTFY.SH)
-        # =====================================================================
         def handle_remote_command(cmd):
             nonlocal profiles, device_name
             c_type = cmd.get("type") or cmd.get("action") or cmd.get("cmd") or ""
@@ -2638,22 +2638,28 @@ def main(page: ft.Page):
 
         threading.Thread(target=cloud_listener, daemon=True).start()
 
-        # =====================================================================
-        # PRZECHWYTYWANIE SYSTEMOWEGO PRZYCISKU "WSTECZ" NA ANDROID TV (2x KLIK)
-        # =====================================================================
         def check_double_back_to_exit():
             now = time.time()
             if now - app_state["last_back_press_ts"] < 2.2:
-                close_app_cleanly()
+                force_exit_app()
             else:
                 app_state["last_back_press_ts"] = now
                 dash_back_hint_txt.value = "⚠️ Naciśnij WSTECZ jeszcze raz (w ciągu 2 sek.), aby zamknąć IPTV BP!"
                 dash_back_hint_txt.color = "#ef4444"
                 status_banner.value = "⚠️ Naciśnij WSTECZ jeszcze raz, aby zamknąć aplikację!"
                 status_banner.color = "#ef4444"
+                now_playing_txt.value = "⚠️ Naciśnij WSTECZ jeszcze raz, aby zamknąć aplikację!"
                 safe_ui_update()
 
+        def rebuild_guard_views():
+            page.views.clear()
+            page.views.append(guard_view_1)
+            page.views.append(guard_view_2)
+            page.views.append(main_app_view)
+
         def handle_universal_back():
+            rebuild_guard_views()
+
             if app_state["search_open"]:
                 close_search_panel()
                 return
@@ -2683,10 +2689,44 @@ def main(page: ft.Page):
         except Exception:
             pass
 
+        def trigger_current_ok_action():
+            now = time.time()
+            if now - app_state["last_ok_ts"] < 0.25:
+                return
+            app_state["last_ok_ts"] = now
+
+            if app_state["search_open"] and search_menu_buttons:
+                search_menu_buttons[state["search_idx"]].data["action"]()
+                return
+            if app_state["settings_open"] and settings_menu_buttons:
+                settings_menu_buttons[state["settings_idx"]].data["action"]()
+                return
+            if app_state["dialog_open"]:
+                return
+
+            if login_view.visible:
+                login_items[state["login_idx"]].data["action"]()
+                return
+
+            if dash_view.visible:
+                if state["zone"] == "dash_top":
+                    dash_top_buttons[state["dash_top_idx"]].data["action"]()
+                else:
+                    dash_tiles[state["dash_idx"]].data["action"]()
+                return
+
+            if dash_inner_view.visible:
+                total_built = len(state["all_built_items"])
+                if state["zone"] == "list_search":
+                    open_search_panel()
+                elif state["zone"] == "list" and 0 <= state["list_idx"] < total_built:
+                    state["all_built_items"][state["list_idx"]]["action"]()
+                elif state["zone"] == "right":
+                    right_buttons[state["right_idx"]].data["action"]()
+
         def on_key_event(e: ft.KeyboardEvent):
             key = e.key
 
-            # Nawigacja pilotem wewnątrz otwartego panelu Lupy Wyszukiwania
             if app_state["search_open"] and search_menu_buttons:
                 if key == "Arrow Down":
                     state["search_idx"] = (state["search_idx"] + 1) % len(search_menu_buttons)
@@ -2695,16 +2735,11 @@ def main(page: ft.Page):
                     state["search_idx"] = (state["search_idx"] - 1) % len(search_menu_buttons)
                     app_state["style_search_fn"]()
                 elif key in ("Enter", "Select", " "):
-                    now = time.time()
-                    if now - app_state["last_ok_ts"] < 0.25:
-                        return
-                    app_state["last_ok_ts"] = now
-                    search_menu_buttons[state["search_idx"]].data["action"]()
+                    trigger_current_ok_action()
                 elif key in ("Backspace", "Escape", "Browser Back", "Go Back"):
                     close_search_panel()
                 return
 
-            # Nawigacja pilotem wewnątrz otwartego Menu Ustawień
             if app_state["settings_open"] and settings_menu_buttons:
                 if key == "Arrow Down":
                     state["settings_idx"] = (state["settings_idx"] + 1) % len(settings_menu_buttons)
@@ -2713,11 +2748,7 @@ def main(page: ft.Page):
                     state["settings_idx"] = (state["settings_idx"] - 1) % len(settings_menu_buttons)
                     app_state["style_settings_fn"]()
                 elif key in ("Enter", "Select", " "):
-                    now = time.time()
-                    if now - app_state["last_ok_ts"] < 0.25:
-                        return
-                    app_state["last_ok_ts"] = now
-                    settings_menu_buttons[state["settings_idx"]].data["action"]()
+                    trigger_current_ok_action()
                 elif key in ("Backspace", "Escape", "Browser Back", "Go Back"):
                     close_settings_panel()
                 return
@@ -2732,11 +2763,8 @@ def main(page: ft.Page):
                 elif key == "Arrow Up" and state["login_idx"] > 0:
                     state["login_idx"] -= 1
                 elif key in ("Enter", "Select", " "):
-                    now = time.time()
-                    if now - app_state["last_ok_ts"] < 0.25:
-                        return
-                    app_state["last_ok_ts"] = now
-                    login_items[state["login_idx"]].data["action"]()
+                    trigger_current_ok_action()
+                    return
                 elif key in ("Backspace", "Escape", "Browser Back", "Go Back"):
                     handle_universal_back()
                     return
@@ -2752,11 +2780,8 @@ def main(page: ft.Page):
                     elif key == "Arrow Down":
                         state["zone"] = "dashboard"
                     elif key in ("Enter", "Select", " "):
-                        now = time.time()
-                        if now - app_state["last_ok_ts"] < 0.25:
-                            return
-                        app_state["last_ok_ts"] = now
-                        dash_top_buttons[state["dash_top_idx"]].data["action"]()
+                        trigger_current_ok_action()
+                        return
                     elif key in ("Backspace", "Escape", "Browser Back", "Go Back"):
                         handle_universal_back()
                         return
@@ -2769,20 +2794,16 @@ def main(page: ft.Page):
                 elif key == "Arrow Left" and state["dash_idx"] > 0:
                     state["dash_idx"] -= 1
                 elif key == "Arrow Down" and state["dash_idx"] < 3:
-                    state["dash_idx"] = min(7, state["dash_idx"] + 3)
+                    state["dash_idx"] = min(8, state["dash_idx"] + 3)
                 elif key == "Arrow Up":
                     if state["dash_idx"] >= 3:
                         state["dash_idx"] = min(2, max(0, state["dash_idx"] - 3))
                     else:
-                        # Z górnych kafelków strzałka W GÓRĘ wjeżdża na górny pasek (🔍 Lupa / 👤 Konto / ⚙️ Ustawienia)
                         state["zone"] = "dash_top"
                         state["dash_top_idx"] = 0
                 elif key in ("Enter", "Select", " "):
-                    now = time.time()
-                    if now - app_state["last_ok_ts"] < 0.25:
-                        return
-                    app_state["last_ok_ts"] = now
-                    dash_tiles[state["dash_idx"]].data["action"]()
+                    trigger_current_ok_action()
+                    return
                 elif key in ("Backspace", "Escape", "Browser Back", "Go Back"):
                     handle_universal_back()
                     return
@@ -2835,7 +2856,6 @@ def main(page: ft.Page):
                             state["list_idx"] -= 1
                             render_viewport()
                         else:
-                            # Wyjechanie na samą górę listy podświetla stały pasek Lupy (🔍 SZUKAJ)
                             state["zone"] = "list_search"
                             render_viewport()
                     elif state["zone"] == "right" and state["right_idx"] > 0:
@@ -2843,17 +2863,7 @@ def main(page: ft.Page):
                         update_focus_styles()
 
                 elif key in ("Enter", "Select", " "):
-                    now = time.time()
-                    if now - app_state["last_ok_ts"] < 0.25:
-                        return
-                    app_state["last_ok_ts"] = now
-
-                    if state["zone"] == "list_search":
-                        open_search_panel()
-                    elif state["zone"] == "list" and 0 <= state["list_idx"] < total_built:
-                        state["all_built_items"][state["list_idx"]]["action"]()
-                    elif state["zone"] == "right":
-                        right_buttons[state["right_idx"]].data["action"]()
+                    trigger_current_ok_action()
 
                 elif key in ("Backspace", "Escape", "Browser Back", "Go Back"):
                     handle_universal_back()
@@ -2864,7 +2874,7 @@ def main(page: ft.Page):
 
         if state["auto_login"] and has_saved_credentials():
             def _reliable_boot():
-                if stop_event.wait(0.6):
+                if stop_event.wait(0.25):
                     return
                 if login_view.visible and not state["client"]:
                     do_login(is_auto=True)
