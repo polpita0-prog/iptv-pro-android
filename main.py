@@ -13,13 +13,12 @@ import uuid
 import flet as ft
 import requests
 
-# Sprawdzamy czy środowisko posiada zewnętrzny moduł flet_video
 try:
     import flet_video as ftv
-     VideoControlClass = ftv.Video
-     VideoMediaClass = ftv.VideoMedia
+    VideoControlClass = ftv.Video
+    VideoMediaClass = ftv.VideoMedia
     HAS_FLET_VIDEO_PKG = True
-except ImportError:
+except Exception:
     VideoControlClass = getattr(ft, "Video", None)
     VideoMediaClass = getattr(ft, "VideoMedia", None)
     HAS_FLET_VIDEO_PKG = False
@@ -182,42 +181,110 @@ tmdb_memory_cache = {}
 epg_memory_cache = {}
 
 
-def fetch_tmdb_details(title):
+def fetch_tmdb_details(title, media_hint=None):
     clean_title = clean_media_title(title)
     if not clean_title:
         return None
-    if clean_title.lower() in tmdb_memory_cache:
-        return tmdb_memory_cache[clean_title.lower()]
+    cache_key = f"{media_hint or 'multi'}:{clean_title.lower()}"
+    if cache_key in tmdb_memory_cache:
+        return tmdb_memory_cache[cache_key]
     try:
-        url = (
+        search_Url = (
             f"https://api.themoviedb.org/3/search/multi"
             f"?api_key={TMDB_API_KEY}&query={requests.utils.quote(clean_title)}&language=pl-PL"
         )
-        r = requests.get(url, timeout=4)
-        if r.status_code == 200:
-            results = r.json().get("results", [])
-            if results:
-                best = results[0]
-                poster_path = best.get("poster_path")
-                release = (
-                    best.get("release_date") or best.get("first_air_date") or ""
-                )
-                res = {
-                    "poster": (
-                        f"https://image.tmdb.org/t/p/w500{poster_path}"
-                        if poster_path
-                        else None
-                    ),
-                    "plot": best.get("overview") or "",
-                    "rating": (
-                        str(round(best.get("vote_average", 0), 1))
-                        if best.get("vote_average")
-                        else ""
-                    ),
-                    "year": release[:4] if release else "",
-                }
-                tmdb_memory_cache[clean_title.lower()] = res
-                return res
+        r = requests.get(search_Url, timeout=4)
+        if r.status_code != 200:
+            return None
+        results = r.json().get("results", [])
+        if not results:
+            return None
+
+        best = results[0]
+        m_type = best.get("media_type") or ("tv" if media_hint == "series" else "movie")
+        if m_type not in ("movie", "tv"):
+            m_type = "tv" if media_hint == "series" else "movie"
+
+        tmdb_id = best.get("id")
+        poster_path = best.get("poster_path")
+        backdrop_path = best.get("backdrop_path")
+        release = best.get("release_date") or best.get("first_air_date") or ""
+        overview = (best.get("overview") or "").strip()
+
+        genres_list = []
+        cast_list = []
+        director_str = ""
+        runtime_str = ""
+        seasons_count = ""
+
+        if tmdb_id:
+            det_url = (
+                f"https://api.themoviedb.org/3/{m_type}/{tmdb_id}"
+                f"?api_key={TMDB_API_KEY}&language=pl-PL&append_to_response=credits"
+            )
+            rd = requests.get(det_url, timeout=4)
+            if rd.status_code == 200:
+                det_data = rd.json() or {}
+                if not overview:
+                    overview = (det_data.get("overview") or "").strip()
+                if not poster_path:
+                    poster_path = det_data.get("poster_path")
+                if not backdrop_path:
+                    backdrop_path = det_data.get("backdrop_path")
+                genres_list = [
+                    g.get("name") for g in (det_data.get("genres") or []) if g.get("name")
+                ]
+                if m_type == "movie":
+                    rt_m = det_data.get("runtime")
+                    if rt_m:
+                        runtime_str = f"{rt_m} min"
+                else:
+                    s_cnt = det_data.get("number_of_seasons")
+                    e_cnt = det_data.get("number_of_episodes")
+                    if s_cnt:
+                        seasons_count = f"Sezony: {s_cnt}" + (f" ({e_cnt} odc.)" if e_cnt else "")
+                    ep_rt = det_data.get("episode_run_time") or []
+                    if ep_rt:
+                        runtime_str = f"~{ep_rt[0]} min/odc."
+
+                credits = det_data.get("credits") or {}
+                cast_raw = credits.get("cast") or []
+                cast_list = [c.get("name") for c in cast_raw[:6] if c.get("name")]
+                crew_raw = credits.get("crew") or []
+                directors = [
+                    c.get("name")
+                    for c in crew_raw
+                    if c.get("job") in ("Director", "Series Director", "Creator") and c.get("name")
+                ]
+                if not directors and det_data.get("created_by"):
+                    directors = [c.get("name") for c in det_data.get("created_by") if c.get("name")]
+                if directors:
+                    director_str = ", ".join(directors[:2])
+
+        # Fallback do opisu angielskiego jeśli polski opis w TMDB jest pusty
+        if not overview and tmdb_id:
+            en_url = f"https://api.themoviedb.org/3/{m_type}/{tmdb_id}?api_key={TMDB_API_KEY}&language=en-US"
+            ren = requests.get(en_url, timeout=3)
+            if ren.status_code == 200:
+                overview = (ren.json().get("overview") or "").strip()
+
+        res = {
+            "title_pl": best.get("title") or best.get("name") or clean_title,
+            "original_title": best.get("original_title") or best.get("original_name") or "",
+            "poster": f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None,
+            "backdrop": f"https://image.tmdb.org/t/p/w780{backdrop_path}" if backdrop_path else None,
+            "plot": overview,
+            "rating": str(round(best.get("vote_average", 0), 1)) if best.get("vote_average") else "",
+            "votes": str(best.get("vote_count", "")) if best.get("vote_count") else "",
+            "year": release[:4] if release else "",
+            "genres": ", ".join(genres_list[:4]),
+            "cast": ", ".join(cast_list),
+            "director": director_str,
+            "runtime": runtime_str,
+            "seasons_info": seasons_count,
+        }
+        tmdb_memory_cache[cache_key] = res
+        return res
     except Exception:
         pass
     return None
@@ -290,8 +357,17 @@ class XtreamClient:
             pl_cat_ids=self.pl_cat_ids.get(kind, set()),
         )
 
+    def get_vod_info(self, vod_id):
+        try:
+            return self._api({"action": "get_vod_info", "vod_id": vod_id}, timeout=8) or {}
+        except Exception:
+            return {}
+
     def get_series_info(self, series_id):
-        return self._api({"action": "get_series_info", "series_id": series_id})
+        try:
+            return self._api({"action": "get_series_info", "series_id": series_id}, timeout=10) or {}
+        except Exception:
+            return {}
 
     def get_short_epg(self, stream_id):
         if not stream_id:
@@ -496,6 +572,9 @@ class M3UClient:
         raw_list = cat_map.get(category_id, [])
         return sort_streams_smart(raw_list, kind, pl_cat_ids=pl_ids)
 
+    def get_vod_info(self, vod_id):
+        return {}
+
     def get_series_info(self, series_id):
         return self.series_map.get(series_id, {"episodes": {}})
 
@@ -598,9 +677,11 @@ def main(page: ft.Page):
             "settings_open": False,
             "search_open": False,
             "in_fullscreen_player": False,
+            "in_detail_page": False,
             "osd_list_open": False,
             "paused_in_bg": False,
             "preview_seq": 0,
+            "detail_seq": 0,
             "osd_hide_seq": 0,
             "num_buffer": "",
             "num_seq": 0,
@@ -620,7 +701,6 @@ def main(page: ft.Page):
                 "profiles": [],
                 "processed_ids": [],
                 "auto_vlc": False,
-                # Domyślnie wyłączamy ryzykowny ft.Video, chyba że zainstalowano flet_video
                 "use_native_video_ctrl": bool(HAS_FLET_VIDEO_PKG),
                 "auto_launch_vlc_on_zap": True,
                 "auto_login": True,
@@ -844,6 +924,8 @@ def main(page: ft.Page):
             "osd_channels": [],
             "osd_idx": 0,
             "osd_cat_idx": 0,
+            "detail_item": None,
+            "detail_btn_idx": 0,
             "search_query": "",
             "only_pl": bool(only_pl_saved),
             "now_playing": "Brak aktywnego strumienia",
@@ -1048,7 +1130,7 @@ def main(page: ft.Page):
             color="#a1a1aa",
         )
         status_info_sub = ft.Text(
-            "Najedź na pozycję po lewej stronie, aby wyświetlić opis i program TV (EPG).\nPodczas oglądania kanału użyj ⬆️/⬇️ lub cyfr 0-9, aby zmieniać kanały bez wychodzenia, albo naciśnij OK, aby otworzyć półprzezroczystą listę.",
+            "Najedź na pozycję po lewej stronie, aby wyświetlić opis i program TV (EPG).\nKliknij OK na filmie lub serialu, aby otworzyć pełną stronę z opisem, obsadą i oceną!",
             size=14,
             color="#d4d4d8",
             max_lines=9,
@@ -1115,7 +1197,7 @@ def main(page: ft.Page):
         )
 
         now_playing_txt = ft.Text(
-            "▶ Pilot: OK = Oglądaj (podczas oglądania ⬆️/⬇️ lub cyfry 0-9 = zmiana kanału, OK = lista kanałów)",
+            "▶ Pilot: OK na filmie/serialu = Pełna strona z opisem  |  OK na kanale TV = Oglądaj (⬆️/⬇️ zmiana kanału)",
             weight=ft.FontWeight.BOLD,
             size=13,
             color="#a1a1aa",
@@ -1124,6 +1206,397 @@ def main(page: ft.Page):
         list_header_lbl = ft.Text("📂 LISTA KATEGORII", size=13, weight=ft.FontWeight.BOLD, color="#e4e4e7")
         list_column = ft.Column(spacing=5, expand=True)
         status_banner = ft.Text(f"🟢 Zdalny Cloud aktywny — Kod ID: {device_id}", color="#a1a1aa", size=13)
+
+        # =====================================================================
+        # DEDYKOWANA STRONA SZCZEGÓŁÓW FILMU I SERIALU (PEŁNY OPIS, OBSADA, TMDB)
+        # =====================================================================
+        detail_poster_img = ft.Image(
+            src="",
+            width=260,
+            height=380,
+            fit=ft.ImageFit.COVER,
+            border_radius=14,
+            visible=False,
+        )
+        detail_backdrop_img = ft.Image(
+            src="",
+            fit=ft.ImageFit.COVER,
+            opacity=0.18,
+            expand=True,
+            visible=False,
+        )
+        detail_badge_txt = ft.Text("🎬 KARTA FILMU VOD", size=12, weight=ft.FontWeight.BOLD, color="#f4f4f5")
+        detail_title_txt = ft.Text("", size=28, weight=ft.FontWeight.BOLD, color="#ffffff")
+        detail_orig_title_txt = ft.Text("", size=14, color="#a1a1aa", italic=True)
+        detail_meta_row_txt = ft.Text("", size=15, weight=ft.FontWeight.BOLD, color="#eab308")
+        detail_genres_txt = ft.Text("", size=14, color="#d4d4d8", weight=ft.FontWeight.BOLD)
+        detail_director_txt = ft.Text("", size=13, color="#a1a1aa")
+        detail_cast_txt = ft.Text("", size=13, color="#a1a1aa", max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
+        detail_plot_txt = ft.Text(
+            "⏳ Pobieranie pełnego polskiego opisu fabuły oraz informacji o obsadzie...",
+            size=15,
+            color="#f4f4f5",
+        )
+        detail_buttons_row = ft.Row([], spacing=12, wrap=True)
+        detail_action_buttons = []
+
+        media_detail_view = ft.Container(
+            content=ft.Stack(
+                [
+                    detail_backdrop_img,
+                    ft.Container(
+                        padding=28,
+                        expand=True,
+                        content=ft.Column(
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Row(
+                                            [
+                                                make_iptv_bp_badge(38),
+                                                ft.Container(
+                                                    content=detail_badge_txt,
+                                                    bgcolor="#27272a",
+                                                    padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                                                    border_radius=8,
+                                                    border=ft.border.all(1, "#52525b"),
+                                                ),
+                                            ],
+                                            spacing=12,
+                                        ),
+                                        ft.Text(
+                                            "Pilot: ⬅️ ➡️ Wybór przycisku  |  OK = Zatwierdź  |  WSTECZ = Wróć do listy",
+                                            size=13,
+                                            color="#a1a1aa",
+                                            weight=ft.FontWeight.BOLD,
+                                        ),
+                                    ],
+                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                ),
+                                ft.Divider(height=10, color="#2e323d"),
+                                ft.Row(
+                                    [
+                                        ft.Container(
+                                            content=detail_poster_img,
+                                            bgcolor="#181a20",
+                                            border_radius=14,
+                                            border=ft.border.all(2, "#3f3f46"),
+                                        ),
+                                        ft.Column(
+                                            [
+                                                detail_title_txt,
+                                                detail_orig_title_txt,
+                                                detail_meta_row_txt,
+                                                detail_genres_txt,
+                                                detail_director_txt,
+                                                detail_cast_txt,
+                                                ft.Divider(height=8, color="#2e323d"),
+                                                ft.Container(
+                                                    content=ft.Column(
+                                                        [detail_plot_txt],
+                                                        scroll=ft.ScrollMode.AUTO,
+                                                        expand=True,
+                                                    ),
+                                                    bgcolor="#CC16181F",
+                                                    padding=16,
+                                                    border_radius=12,
+                                                    border=ft.border.all(1, "#2e323d"),
+                                                    expand=True,
+                                                ),
+                                                ft.Container(height=4),
+                                                detail_buttons_row,
+                                            ],
+                                            expand=True,
+                                            spacing=6,
+                                        ),
+                                    ],
+                                    expand=True,
+                                    spacing=24,
+                                    vertical_alignment=ft.CrossAxisAlignment.START,
+                                ),
+                            ],
+                            expand=True,
+                            spacing=10,
+                        ),
+                    ),
+                ],
+                expand=True,
+            ),
+            expand=True,
+            visible=False,
+            bgcolor="#0e1014",
+        )
+
+        def style_detail_buttons():
+            for idx, b in enumerate(detail_action_buttons):
+                is_foc = (idx == state["detail_btn_idx"])
+                base_t = b.data["base_text"]
+                is_primary = (idx == 0)
+                b.bgcolor = "#3f3f46" if is_foc else ("#27272a" if is_primary else "#181a20")
+                b.border = ft.border.all(2.5 if is_foc else 1, "#f4f4f5" if is_foc else "#52525b")
+                b.data["text_ctrl"].color = "#ffffff" if is_foc else "#e4e4e7"
+                b.data["text_ctrl"].value = f"▶  {base_t}" if is_foc else base_t
+            safe_ui_update()
+
+        def close_media_detail_page():
+            app_state["in_detail_page"] = False
+            media_detail_view.visible = False
+            dash_inner_view.visible = True
+            state["zone"] = "list"
+            build_full_list_data(keep_idx=True)
+
+        def open_series_episodes_list(item):
+            app_state["in_detail_page"] = False
+            media_detail_view.visible = False
+            dash_inner_view.visible = True
+            state["zone"] = "list"
+
+            title = item.get("name") or item.get("title") or "Serial"
+            uid = get_item_unique_id(item)
+            state["active_series_id"] = uid
+            state["active_series_title"] = title
+            list_column.controls.clear()
+            list_header_lbl.value = f"⏳ Odcinki: {title}..."
+            safe_ui_update()
+
+            def _w():
+                try:
+                    info = state["client"].get_series_info(item.get("series_id"))
+                    eps_map = (info or {}).get("episodes") or {}
+                    flat_eps = []
+                    for s_num in sorted(eps_map.keys(), key=lambda x: int(x) if str(x).isdigit() else 999):
+                        for ep in eps_map[s_num]:
+                            ep_copy = dict(ep)
+                            ep_copy["kind"] = "episode"
+                            ep_copy["series_title"] = title
+                            ep_copy["cover"] = ep.get("info", {}).get("movie_image") if isinstance(ep.get("info"), dict) else (item.get("cover") or "")
+                            ep_copy["plot"] = ep.get("info", {}).get("plot") if isinstance(ep.get("info"), dict) else ""
+                            ep_copy["display_title"] = f"S{int(s_num):02d}E{int(ep.get('episode_num', 1)):02d} - {ep.get('title')}"
+                            flat_eps.append(ep_copy)
+                    state["episodes"] = flat_eps
+                    state["view_mode"] = "episodes"
+                    build_full_list_data()
+                except Exception:
+                    back_to_streams()
+
+            threading.Thread(target=_w, daemon=True).start()
+
+        def open_media_detail_page(item):
+            if not isinstance(item, dict):
+                return
+            k = item.get("kind") or state["kind"]
+            title = item.get("display_title") or item.get("name") or item.get("title") or "Pozycja"
+            icon_url = item.get("stream_icon") or item.get("cover") or ""
+
+            state["detail_item"] = item
+            state["current_item"] = item
+            state["detail_btn_idx"] = 0
+            app_state["in_detail_page"] = True
+
+            detail_badge_txt.value = (
+                "🎬 KARTA FILMU VOD (OPIS I SZCZEGÓŁY)"
+                if k == "vod"
+                else ("🎞 KARTA SERIALU (OPIS I SEZONY)" if k == "series" else "🎞 KARTA ODCINKA SERIALU")
+            )
+            detail_title_txt.value = title
+            detail_orig_title_txt.value = ""
+
+            pl_tag = "🇵🇱 POLSKA WERSJA   •   " if is_polish_item(item, get_current_pl_cat_ids()) else ""
+            fav_tag = "⭐ W ULUBIONYCH   •   " if is_favorite(item) else ""
+            rt_item = str(item.get("rating") or item.get("rating_5based") or "").strip()
+            detail_meta_row_txt.value = f"{fav_tag}{pl_tag}" + (f"⭐ Ocena: {rt_item}" if rt_item else "⏳ Pobieranie danych z TMDB...")
+            detail_genres_txt.value = f"📂 Kategoria: {(state.get('active_cat') or {}).get('category_name') or item.get('group') or k.upper()}"
+            detail_director_txt.value = ""
+            detail_cast_txt.value = ""
+            detail_plot_txt.value = (
+                item.get("plot")
+                or "⏳ Pobieranie pełnego polskiego opisu fabuły, obsady oraz oceny z bazy TMDB i serwera VOD..."
+            )
+
+            if icon_url and icon_url.startswith("http"):
+                detail_poster_img.src = icon_url
+                detail_poster_img.visible = True
+            else:
+                detail_poster_img.visible = False
+            detail_backdrop_img.visible = False
+
+            def _make_detail_btn(lbl_str, fn_click):
+                t_c = ft.Text(lbl_str, size=15, weight=ft.FontWeight.BOLD, color="#ffffff")
+                b_c = ft.Container(
+                    content=t_c,
+                    padding=ft.padding.symmetric(horizontal=18, vertical=12),
+                    border_radius=10,
+                    bgcolor="#181a20",
+                    border=ft.border.all(1.5, "#52525b"),
+                    on_click=lambda _: fn_click(),
+                )
+                b_c.data = {"text_ctrl": t_c, "base_text": lbl_str, "action": fn_click}
+                return b_c
+
+            def _play_direct():
+                app_state["in_detail_page"] = False
+                media_detail_view.visible = False
+                if k == "episode":
+                    play_episode(item)
+                else:
+                    ext = item.get("container_extension", "mp4") or "mp4"
+                    url = state["client"].build_stream_url("vod", item.get("stream_id"), ext, item=item)
+                    play_stream_url(url, title, item=item)
+
+            def _play_vlc_direct():
+                if k == "episode":
+                    ext = item.get("container_extension", "mp4") or "mp4"
+                    url = state["client"].build_stream_url("series", item.get("id"), ext, item=item)
+                else:
+                    ext = item.get("container_extension", "mp4") or "mp4"
+                    url = state["client"].build_stream_url("vod", item.get("stream_id"), ext, item=item)
+                launch_vlc_intent(url, title)
+
+            def _play_first_series_ep():
+                def _w_first():
+                    try:
+                        info = state["client"].get_series_info(item.get("series_id"))
+                        eps_map = (info or {}).get("episodes") or {}
+                        for s_num in sorted(eps_map.keys(), key=lambda x: int(x) if str(x).isdigit() else 999):
+                            if eps_map[s_num]:
+                                first_ep = dict(eps_map[s_num][0])
+                                first_ep["display_title"] = f"{title} - S{int(s_num):02d}E{int(first_ep.get('episode_num', 1)):02d}"
+                                app_state["in_detail_page"] = False
+                                media_detail_view.visible = False
+                                play_episode(first_ep)
+                                return
+                    except Exception:
+                        pass
+
+                threading.Thread(target=_w_first, daemon=True).start()
+
+            def _toggle_fav_on_detail():
+                toggle_favorite()
+                new_fav_lbl = "⭐ Usuń z Ulubionych" if is_favorite(item) else "⭐ Dodaj do Ulubionych"
+                set_tv_button_text(btn_fav_d, new_fav_lbl)
+                style_detail_buttons()
+
+            detail_action_buttons.clear()
+            detail_buttons_row.controls.clear()
+
+            fav_btn_lbl = "⭐ Usuń z Ulubionych" if is_favorite(item) else "⭐ Dodaj do Ulubionych"
+            btn_fav_d = _make_detail_btn(fav_btn_lbl, _toggle_fav_on_detail)
+            btn_back_d = _make_detail_btn("↩ Wróć do listy", close_media_detail_page)
+
+            if k == "series":
+                btn_eps = _make_detail_btn("🎞 WYBIERZ ODCINEK (Lista sezonów)", lambda: open_series_episodes_list(item))
+                btn_first = _make_detail_btn("▶ Odtwórz S01E01", _play_first_series_ep)
+                detail_action_buttons.extend([btn_eps, btn_first, btn_fav_d, btn_back_d])
+            else:
+                btn_play_m = _make_detail_btn("▶ OGLĄDAJ TERAZ", _play_direct)
+                btn_vlc_m = _make_detail_btn("🚀 Otwórz w VLC", _play_vlc_direct)
+                detail_action_buttons.extend([btn_play_m, btn_vlc_m, btn_fav_d, btn_back_d])
+
+            detail_buttons_row.controls.extend(detail_action_buttons)
+
+            dash_inner_view.visible = False
+            media_detail_view.visible = True
+            style_detail_buttons()
+
+            # Asynchroniczne dociągnięcie pełnych metadanych z TMDB + serwera Xtream VOD/Series
+            app_state["detail_seq"] += 1
+            cur_dseq = app_state["detail_seq"]
+
+            def _load_full_metadata():
+                tmdb_query_title = item.get("series_title") or title
+                tmdb = fetch_tmdb_details(tmdb_query_title, media_hint=("series" if k == "series" else "movie"))
+                if cur_dseq != app_state["detail_seq"] or stop_event.is_set():
+                    return
+
+                xtream_info = {}
+                if state.get("client"):
+                    if k == "vod" and item.get("stream_id"):
+                        vod_raw = state["client"].get_vod_info(item.get("stream_id"))
+                        xtream_info = (vod_raw or {}).get("info") or {}
+                    elif k == "series" and item.get("series_id"):
+                        ser_raw = state["client"].get_series_info(item.get("series_id"))
+                        xtream_info = (ser_raw or {}).get("info") or {}
+                        eps_m = (ser_raw or {}).get("episodes") or {}
+                        if eps_m:
+                            total_e = sum(len(v) for v in eps_m.values())
+                            xtream_info["_seasons_summary"] = f"Sezony: {len(eps_m)} ({total_e} odc.)"
+
+                if cur_dseq != app_state["detail_seq"] or stop_event.is_set():
+                    return
+
+                poster_final = (
+                    (tmdb or {}).get("poster")
+                    or xtream_info.get("movie_image")
+                    or xtream_info.get("cover_big")
+                    or xtream_info.get("cover")
+                    or icon_url
+                )
+                if poster_final and poster_final.startswith("http"):
+                    detail_poster_img.src = poster_final
+                    detail_poster_img.visible = True
+
+                backdrop_final = (tmdb or {}).get("backdrop")
+                if not backdrop_final and isinstance(xtream_info.get("backdrop_path"), list) and xtream_info["backdrop_path"]:
+                    backdrop_final = xtream_info["backdrop_path"][0]
+                if backdrop_final and str(backdrop_final).startswith("http"):
+                    detail_backdrop_img.src = str(backdrop_final)
+                    detail_backdrop_img.visible = True
+
+                orig_t = (tmdb or {}).get("original_title") or xtream_info.get("o_name") or ""
+                if orig_t and orig_t.lower() != clean_media_title(title).lower():
+                    detail_orig_title_txt.value = f"Tytuł oryginalny: {orig_t}"
+
+                year_val = (tmdb or {}).get("year") or str(xtream_info.get("releasedate") or xtream_info.get("releaseDate") or "")[:4]
+                rating_val = (tmdb or {}).get("rating") or str(xtream_info.get("rating") or item.get("rating") or "")
+                runtime_val = (tmdb or {}).get("runtime") or xtream_info.get("duration") or ""
+                seasons_val = xtream_info.get("_seasons_summary") or (tmdb or {}).get("seasons_info") or ""
+
+                meta_parts = []
+                if is_favorite(item):
+                    meta_parts.append("⭐ W ULUBIONYCH")
+                if is_polish_item(item, get_current_pl_cat_ids()):
+                    meta_parts.append("🇵🇱 PL")
+                if year_val:
+                    meta_parts.append(f"📅 Rok: {year_val}")
+                if rating_val and str(rating_val) != "0":
+                    meta_parts.append(f"⭐ Ocena TMDB: {rating_val}/10")
+                if runtime_val:
+                    meta_parts.append(f"⏱ Czas: {runtime_val}")
+                if seasons_val:
+                    meta_parts.append(f"🎞 {seasons_val}")
+
+                detail_meta_row_txt.value = "   •   ".join(meta_parts) if meta_parts else "🎬 Pozycja katalogu VOD"
+
+                genres_val = (tmdb or {}).get("genres") or xtream_info.get("genre") or ""
+                if genres_val:
+                    detail_genres_txt.value = f"🎭 Gatunek: {genres_val}"
+
+                dir_val = (tmdb or {}).get("director") or xtream_info.get("director") or ""
+                if dir_val:
+                    detail_director_txt.value = f"🎬 Reżyseria / Twórcy: {dir_val}"
+
+                cast_val = (tmdb or {}).get("cast") or xtream_info.get("cast") or xtream_info.get("actors") or ""
+                if cast_val:
+                    detail_cast_txt.value = f"👥 Obsada: {cast_val}"
+
+                plot_val = (
+                    (tmdb or {}).get("plot")
+                    or xtream_info.get("plot")
+                    or xtream_info.get("description")
+                    or item.get("plot")
+                    or ""
+                ).strip()
+                if plot_val:
+                    detail_plot_txt.value = plot_val
+                else:
+                    detail_plot_txt.value = (
+                        "Brak szczegółowego opisu fabuły dla tej pozycji w bazie TMDB oraz na serwerze.\n"
+                        "Użyj przycisków poniżej, aby uruchomić odtwarzanie filmu lub wybrać odcinek serialu."
+                    )
+
+                safe_ui_update()
+
+            threading.Thread(target=_load_full_metadata, daemon=True).start()
 
         # =====================================================================
         # PEŁNOEKRANOWY EKRAN KANAŁU Z ZAPPINGIEM (BEZ BŁĘDU UNKNOWN CONTROL: VIDEO)
@@ -1425,7 +1898,7 @@ def main(page: ft.Page):
 
                 threading.Thread(target=_w, daemon=True).start()
             else:
-                stage_ch_epg.value = "Pozycja gotowa do odtwarzania."
+                stage_ch_epg.value = (item.get("plot") or "Pozycja gotowa do odtwarzania.")[:300]
                 safe_ui_update()
 
         def update_osd_channel_epg_async(item):
@@ -1448,7 +1921,7 @@ def main(page: ft.Page):
 
                 threading.Thread(target=_epg_w, daemon=True).start()
             else:
-                osd_right_epg.value = "Naciśnij OK, aby uruchomić tę pozycję."
+                osd_right_epg.value = "Naciśnij OK, aby otworzyć kartę opisu lub uruchomić tę pozycję."
                 safe_ui_update()
 
         def render_osd_channel_list():
@@ -1580,7 +2053,13 @@ def main(page: ft.Page):
 
         def select_channel_from_osd(item):
             close_osd_channel_overlay()
-            on_stream_click(item)
+            k = item.get("kind") or state["kind"]
+            if k == "live":
+                ext = item.get("container_extension", "ts") or "ts"
+                url = state["client"].build_stream_url("live", item.get("stream_id"), ext, item=item)
+                play_stream_url(url, item.get("name") or item.get("title") or "Kanał", item=item)
+            else:
+                on_stream_click(item)
 
         def exit_fullscreen_player():
             v_ctrl = app_state.get("video_ctrl")
@@ -1618,7 +2097,7 @@ def main(page: ft.Page):
                 num_osd_box.visible = False
                 if app_state["osd_list_open"]:
                     close_osd_channel_overlay()
-                on_stream_click(target_item)
+                select_channel_from_osd(target_item)
             else:
                 num_osd_preview_txt.value = f"❌ Brak kanału #{ch_num} (dostępne: 1-{len(ch_list)})"
                 safe_ui_update()
@@ -1672,7 +2151,7 @@ def main(page: ft.Page):
             if prev_it and get_item_unique_id(prev_it) != get_item_unique_id(state.get("current_item")):
                 if app_state["osd_list_open"]:
                     close_osd_channel_overlay()
-                on_stream_click(prev_it)
+                select_channel_from_osd(prev_it)
             else:
                 mini_osd_bar.visible = True
                 schedule_mini_osd_autohide()
@@ -1696,7 +2175,8 @@ def main(page: ft.Page):
                 status_info_meta.value = f"Sekcja: {state['kind'].upper()}  •  Naciśnij OK, aby otworzyć"
                 status_info_sub.value = (
                     "Przewijaj listę strzałkami ⬆️ ⬇️ na całej wysokości okna.\n"
-                    "Po włączeniu kanału możesz zmieniać kanały bez wychodzenia klawiszami ⬆️/⬇️, CH+/CH-, cyframi 0-9 lub otworzyć listę przyciskiem OK."
+                    "• W sekcji TV na żywo: OK uruchamia kanał (zmiana kanałów bez wychodzenia: ⬆️/⬇️, CH+/CH-, 0-9).\n"
+                    "• W sekcji Filmy i Seriale: OK otwiera pełną stronę z opisem fabuły, obsadą i oceną TMDB."
                 )
                 return
 
@@ -1710,10 +2190,14 @@ def main(page: ft.Page):
             info_badge_txt.value = (
                 "📡 KANAŁ TV NA ŻYWO"
                 if k == "live"
-                else ("🎬 FILM VOD" if k == "vod" else "🎞 SERIAL")
+                else ("🎬 FILM VOD (OK = Karta opisu)" if k == "vod" else "🎞 SERIAL (OK = Karta opisu)")
             )
             status_info_title.value = title
-            status_info_meta.value = f"{fav_str}{pl_str}Naciśnij OK, aby odtworzyć"
+            status_info_meta.value = (
+                f"{fav_str}{pl_str}Naciśnij OK, aby odtworzyć"
+                if k == "live"
+                else f"{fav_str}{pl_str}Naciśnij OK, aby otworzyć pełny opis i szczegóły"
+            )
 
             if icon_url and icon_url.startswith("http"):
                 poster_img.src = icon_url
@@ -1721,7 +2205,10 @@ def main(page: ft.Page):
             else:
                 poster_img.visible = False
 
-            status_info_sub.value = "⏳ Pobieranie informacji o programie / opisu..."
+            if item.get("plot"):
+                status_info_sub.value = item["plot"]
+            else:
+                status_info_sub.value = "⏳ Pobieranie informacji o programie / opisu..."
 
             app_state["preview_seq"] += 1
             cur_seq = app_state["preview_seq"]
@@ -1741,20 +2228,26 @@ def main(page: ft.Page):
                     else:
                         status_info_sub.value = "Brak aktualnych danych EPG dla tego kanału.\nNaciśnij OK, aby uruchomić transmisję."
                     safe_ui_update()
-                elif k in ("vod", "series"):
-                    tmdb = fetch_tmdb_details(title)
+                elif k in ("vod", "series", "episode"):
+                    tmdb = fetch_tmdb_details(item.get("series_title") or title, media_hint=("series" if k == "series" else "movie"))
                     if cur_seq != app_state["preview_seq"]:
                         return
                     if tmdb:
                         if tmdb.get("poster"):
                             poster_img.src = tmdb["poster"]
                             poster_img.visible = True
-                        yr = f"📅 Rok: {tmdb['year']}   " if tmdb.get("year") else ""
-                        rt = f"⭐ Ocena TMDB: {tmdb['rating']}/10" if tmdb.get("rating") else ""
-                        status_info_meta.value = f"{fav_str}{pl_str}{yr}{rt}".strip()
-                        status_info_sub.value = tmdb.get("plot") or "Brak polskiego opisu fabuły w bazie TMDB."
+                        yr = f"📅 {tmdb['year']}   " if tmdb.get("year") else ""
+                        rt = f"⭐ TMDB: {tmdb['rating']}/10   " if tmdb.get("rating") else ""
+                        gn = f"🎭 {tmdb['genres']}" if tmdb.get("genres") else ""
+                        status_info_meta.value = f"{fav_str}{pl_str}{yr}{rt}{gn}".strip()
+                        plot_preview = tmdb.get("plot") or item.get("plot") or "Brak polskiego opisu fabuły w bazie TMDB."
+                        cast_preview = f"\n👥 Obsada: {tmdb['cast']}" if tmdb.get("cast") else ""
+                        status_info_sub.value = f"{plot_preview}{cast_preview}\n\n👉 Naciśnij OK, aby otworzyć pełną stronę z opisem!"
                     else:
-                        status_info_sub.value = "Brak dodatkowego opisu w bazie TMDB.\nNaciśnij OK na pilocie, aby rozpocząć oglądanie."
+                        status_info_sub.value = (
+                            (item.get("plot") or "Brak dodatkowego opisu w bazie TMDB.")
+                            + "\n\n👉 Naciśnij OK na pilocie, aby otworzyć kartę pozycji."
+                        )
                     safe_ui_update()
 
             threading.Thread(target=_async_preview, daemon=True).start()
@@ -1798,7 +2291,7 @@ def main(page: ft.Page):
             state["use_native_video_ctrl"] = not state["use_native_video_ctrl"]
             cache_set("use_native_video_ctrl", state["use_native_video_ctrl"])
             now_playing_txt.value = (
-                "🎬 Kontrolka ft.Video WŁĄCZONA (wymaga zbudowanego APK z flet_video)"
+                "🎬 Kontrolka ft.Video WŁĄCZONA (wymaga APK zbudowanego z flet_video)"
                 if state["use_native_video_ctrl"]
                 else "🛡️ Bezpieczny Ekran Zappingu OSD WŁĄCZONY (brak błędu Unknown control: video)"
             )
@@ -1834,7 +2327,8 @@ def main(page: ft.Page):
                 favorites_items.insert(0, item_copy)
                 now_playing_txt.value = f"⭐ Dodano do ulubionych: {nm}"
             cache_set("favorites_v2", favorites_items)
-            build_full_list_data(keep_idx=True)
+            if not app_state["in_detail_page"]:
+                build_full_list_data(keep_idx=True)
 
         def stop_playback(_e=None):
             state["is_playing"] = False
@@ -1879,7 +2373,6 @@ def main(page: ft.Page):
             safe_ui_update()
             threading.Thread(target=lambda: page.launch_url(target_url), daemon=True).start()
 
-        # Płynne przełączanie kanałów w aktywnym odtwarzaczu bez wychodzenia do menu
         def play_stream_url(url, title, item=None):
             prev_curr = state.get("current_item")
             if prev_curr and item and get_item_unique_id(prev_curr) != get_item_unique_id(item):
@@ -1906,8 +2399,6 @@ def main(page: ft.Page):
                 publish_status()
                 return
 
-            # Jeśli włączono natywną kontrolkę Video (tylko gdy zainstalowano flet_video), używamy jej.
-            # W przeciwnym razie budujemy bezpieczny ekran Zappingu OSD, który NIGDY nie wywołuje błędu "unknown control: video".
             if state["use_native_video_ctrl"] and VideoControlClass is not None and VideoMediaClass is not None:
                 existing_vid = app_state.get("video_ctrl")
                 if app_state["in_fullscreen_player"] and existing_vid is not None:
@@ -1963,10 +2454,12 @@ def main(page: ft.Page):
             mini_osd_bar.visible = True
             channel_osd_overlay.visible = False
             app_state["osd_list_open"] = False
+            app_state["in_detail_page"] = False
             app_state["in_fullscreen_player"] = True
 
             dash_view.visible = False
             dash_inner_view.visible = False
+            media_detail_view.visible = False
             fullscreen_player_view.visible = True
             safe_ui_update()
             update_mini_osd_epg_async(item)
@@ -1987,7 +2480,7 @@ def main(page: ft.Page):
             new_pos = (cur_pos + step) % len(streams_list)
             next_item = streams_list[new_pos]
             state["osd_idx"] = new_pos
-            on_stream_click(next_item)
+            select_channel_from_osd(next_item)
 
         search_menu_buttons = []
         search_tf_input = ft.TextField(
@@ -2161,10 +2654,12 @@ def main(page: ft.Page):
             app_state["settings_open"] = False
             app_state["search_open"] = False
             app_state["in_fullscreen_player"] = False
+            app_state["in_detail_page"] = False
             app_state["osd_list_open"] = False
             settings_overlay_box.visible = False
             search_overlay_box.visible = False
             fullscreen_player_view.visible = False
+            media_detail_view.visible = False
             video_placeholder.visible = True
             state["in_dashboard"] = True
             state["view_mode"] = "dashboard"
@@ -2180,9 +2675,11 @@ def main(page: ft.Page):
             app_state["settings_open"] = False
             app_state["search_open"] = False
             app_state["in_fullscreen_player"] = False
+            app_state["in_detail_page"] = False
             settings_overlay_box.visible = False
             search_overlay_box.visible = False
             fullscreen_player_view.visible = False
+            media_detail_view.visible = False
             video_placeholder.visible = True
             state["in_dashboard"] = False
             state["kind"] = kind
@@ -2200,9 +2697,11 @@ def main(page: ft.Page):
             app_state["settings_open"] = False
             app_state["search_open"] = False
             app_state["in_fullscreen_player"] = False
+            app_state["in_detail_page"] = False
             settings_overlay_box.visible = False
             search_overlay_box.visible = False
             fullscreen_player_view.visible = False
+            media_detail_view.visible = False
             video_placeholder.visible = True
             state["in_dashboard"] = False
             state["kind"] = "live"
@@ -2223,9 +2722,11 @@ def main(page: ft.Page):
             app_state["settings_open"] = False
             app_state["search_open"] = False
             app_state["in_fullscreen_player"] = False
+            app_state["in_detail_page"] = False
             settings_overlay_box.visible = False
             search_overlay_box.visible = False
             fullscreen_player_view.visible = False
+            media_detail_view.visible = False
             video_placeholder.visible = True
             state["in_dashboard"] = False
             state["in_fav"] = True
@@ -2243,9 +2744,11 @@ def main(page: ft.Page):
             app_state["settings_open"] = False
             app_state["search_open"] = False
             app_state["in_fullscreen_player"] = False
+            app_state["in_detail_page"] = False
             settings_overlay_box.visible = False
             search_overlay_box.visible = False
             fullscreen_player_view.visible = False
+            media_detail_view.visible = False
             video_placeholder.visible = True
             state["in_dashboard"] = False
             state["in_fav"] = False
@@ -2449,9 +2952,11 @@ def main(page: ft.Page):
             app_state["settings_open"] = False
             app_state["search_open"] = False
             app_state["in_fullscreen_player"] = False
+            app_state["in_detail_page"] = False
             settings_overlay_box.visible = False
             search_overlay_box.visible = False
             fullscreen_player_view.visible = False
+            media_detail_view.visible = False
             video_placeholder.visible = True
             state["client"] = None
             state["streams_cache"].clear()
@@ -2749,13 +3254,19 @@ def main(page: ft.Page):
             height=42,
         )
 
+        btn_detail_right = make_tv_button(
+            "ℹ️ Pełny Opis",
+            lambda: open_media_detail_page(state.get("current_item")) if state.get("current_item") else None,
+            height=42,
+            expand=True,
+        )
         btn_vlc = make_tv_button("🚀 Wymuś VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"]), height=42, expand=True)
         btn_search_right = make_tv_button("🔍 Szukaj", open_search_panel, height=42, expand=True)
         btn_settings_menu = make_tv_button("⚙️ Ustawienia", open_settings_menu_dlg, height=42, expand=True)
         btn_home = make_tv_button("🏠 Menu", open_dashboard, height=42, expand=True)
         btn_exit_right = make_tv_button("🚪 ZAMKNIJ", force_exit_app, height=42, expand=True)
 
-        right_buttons = [btn_vlc, btn_search_right, btn_settings_menu, btn_home, btn_exit_right]
+        right_buttons = [btn_detail_right, btn_vlc, btn_search_right, btn_settings_menu, btn_home, btn_exit_right]
 
         btn_remote_id = make_tv_button(f"🌐 Kod ID Odbiornika: {device_id} ({device_name})", open_remote_settings_dlg, height=42)
         btn_edit_srv = make_tv_button(f"🌐 Serwer: {creds['server'] or 'ustaw'}", lambda: open_field_editor("server", "Adres serwera (http://...)"), height=42)
@@ -2781,7 +3292,7 @@ def main(page: ft.Page):
             content=ft.Column(
                 [
                     ft.Row(
-                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V8.5 DARK", size=22, weight=ft.FontWeight.BOLD, color="#e4e4e7")],
+                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V8.6 DARK", size=22, weight=ft.FontWeight.BOLD, color="#e4e4e7")],
                         alignment=ft.MainAxisAlignment.CENTER,
                         spacing=12,
                     ),
@@ -2910,6 +3421,7 @@ def main(page: ft.Page):
                         login_view,
                         dash_view,
                         dash_inner_view,
+                        media_detail_view,
                         fullscreen_player_view,
                     ],
                     expand=True,
@@ -2997,6 +3509,10 @@ def main(page: ft.Page):
 
             if dash_view.visible:
                 render_dashboard_focus()
+                return
+
+            if media_detail_view.visible:
+                style_detail_buttons()
                 return
 
             if not dash_inner_view.visible:
@@ -3229,32 +3745,11 @@ def main(page: ft.Page):
         def on_stream_click(item):
             k = item.get("kind") or state["kind"]
             title = item.get("name") or item.get("title") or "Strumień"
-            uid = get_item_unique_id(item)
-            if k == "series":
-                state["active_series_id"] = uid
-                state["active_series_title"] = title
-                list_column.controls.clear()
-                list_header_lbl.value = f"⏳ Odcinki: {title}..."
-                safe_ui_update()
-
-                def _w():
-                    try:
-                        info = state["client"].get_series_info(item.get("series_id"))
-                        eps_map = info.get("episodes") or {}
-                        flat_eps = []
-                        for s_num in sorted(eps_map.keys(), key=lambda x: int(x) if str(x).isdigit() else 999):
-                            for ep in eps_map[s_num]:
-                                ep_copy = dict(ep)
-                                ep_copy["display_title"] = f"S{int(s_num):02d}E{int(ep.get('episode_num', 1)):02d} - {ep.get('title')}"
-                                flat_eps.append(ep_copy)
-                        state["episodes"] = flat_eps
-                        state["view_mode"] = "episodes"
-                        build_full_list_data()
-                    except Exception:
-                        back_to_streams()
-
-                threading.Thread(target=_w, daemon=True).start()
+            # Dla filmów VOD oraz Seriali kliknięcie OK na liście otwiera dedykowaną stronę z pełnym opisem!
+            if k in ("vod", "series"):
+                open_media_detail_page(item)
                 return
+
             ext = item.get("container_extension", "ts" if k == "live" else "mp4") or ("ts" if k == "live" else "mp4")
             url = state["client"].build_stream_url(k, item.get("stream_id"), ext, item=item)
             play_stream_url(url, title, item=item)
@@ -3459,6 +3954,10 @@ def main(page: ft.Page):
                     exit_fullscreen_player()
                 return
 
+            if app_state["in_detail_page"]:
+                close_media_detail_page()
+                return
+
             if app_state["search_open"]:
                 close_search_panel()
                 return
@@ -3506,6 +4005,11 @@ def main(page: ft.Page):
                         select_channel_from_osd(channels[state["osd_idx"]])
                 return
 
+            if app_state["in_detail_page"] and detail_action_buttons:
+                idx = max(0, min(state["detail_btn_idx"], len(detail_action_buttons) - 1))
+                detail_action_buttons[idx].data["action"]()
+                return
+
             if app_state["search_open"] and search_menu_buttons:
                 search_menu_buttons[state["search_idx"]].data["action"]()
                 return
@@ -3551,6 +4055,7 @@ def main(page: ft.Page):
             key = e.key
             digit = extract_digit_from_key(key)
 
+            # Sterowanie w pełnoekranowym odtwarzaczu (zmiana kanałów bez wychodzenia)
             if app_state["in_fullscreen_player"]:
                 if digit is not None:
                     handle_numeric_channel_digit(digit)
@@ -3589,6 +4094,20 @@ def main(page: ft.Page):
                         recall_previous_live_channel()
                     elif key in ("Backspace", "Escape", "Browser Back", "Go Back"):
                         handle_universal_back()
+                return
+
+            # Sterowanie na pełnej karcie opisu Filmu / Serialu
+            if app_state["in_detail_page"] and detail_action_buttons:
+                if key in ("Arrow Right", "Arrow Down"):
+                    state["detail_btn_idx"] = (state["detail_btn_idx"] + 1) % len(detail_action_buttons)
+                    style_detail_buttons()
+                elif key in ("Arrow Left", "Arrow Up"):
+                    state["detail_btn_idx"] = (state["detail_btn_idx"] - 1) % len(detail_action_buttons)
+                    style_detail_buttons()
+                elif key in ("Enter", "Select", " "):
+                    trigger_current_ok_action()
+                elif key in ("Backspace", "Escape", "Browser Back", "Go Back"):
+                    close_media_detail_page()
                 return
 
             if app_state["search_open"] and search_menu_buttons:
