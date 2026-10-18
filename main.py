@@ -536,37 +536,45 @@ def build_special_top_categories(kind: str, raw_cats: list) -> list:
 
 def make_iptv_bp_badge(size_px=42):
     return ft.Container(
-        content=ft.Column(
+        content=ft.Row(
             [
-                ft.Text(
-                    "IPTV",
-                    size=max(10, int(size_px * 0.28)),
-                    weight=ft.FontWeight.BOLD,
-                    color="white",
-                    height=max(12, int(size_px * 0.32)),
-                ),
-                ft.Text(
-                    "BP",
-                    size=max(11, int(size_px * 0.34)),
-                    weight=ft.FontWeight.BOLD,
-                    color="#fde047",
-                    height=max(13, int(size_px * 0.38)),
+                ft.Text("▶", size=max(12, int(size_px * 0.42)), color="#38bdf8", weight=ft.FontWeight.BOLD),
+                ft.Column(
+                    [
+                        ft.Text(
+                            "IPTV",
+                            size=max(9, int(size_px * 0.25)),
+                            weight=ft.FontWeight.BOLD,
+                            color="#e0f2fe",
+                            height=max(11, int(size_px * 0.29)),
+                        ),
+                        ft.Text(
+                            "BP",
+                            size=max(11, int(size_px * 0.33)),
+                            weight=ft.FontWeight.BOLD,
+                            color="#38bdf8",
+                            height=max(13, int(size_px * 0.37)),
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.START,
+                    spacing=0,
                 ),
             ],
             alignment=ft.MainAxisAlignment.CENTER,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            spacing=0,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=5,
         ),
-        width=size_px * 1.35,
+        width=size_px * 1.6,
         height=size_px,
-        bgcolor="#ea580c",
+        bgcolor="#0f172a",
         gradient=ft.LinearGradient(
             begin=ft.alignment.top_left,
             end=ft.alignment.bottom_right,
-            colors=["#f97316", "#c2410c"],
+            colors=["#1e3a8a", "#0f172a", "#4c1d95"],
         ),
-        border_radius=10,
-        border=ft.border.all(2, "#fed7aa"),
+        border_radius=12,
+        border=ft.border.all(2, "#38bdf8"),
         alignment=ft.alignment.center,
     )
 
@@ -659,7 +667,6 @@ def main(page: ft.Page):
             except Exception:
                 pass
 
-        # Pewne zamykanie procesu na Android TV
         def force_exit_app(_e=None):
             stop_event.set()
             try:
@@ -909,7 +916,6 @@ def main(page: ft.Page):
                 return cl.pl_cat_ids.get(state["kind"], set())
             return set()
 
-        # Każdy przycisk ma autofocus=False, aby Flet nie dublował kliknięć z on_keyboard_event
         def make_tv_button(text_str, on_click_fn, key_str=None, height=42, expand=False, item_ref=None):
             txt_ctrl = ft.Text(
                 text_str,
@@ -950,7 +956,7 @@ def main(page: ft.Page):
         dash_back_hint_txt = ft.Text(
             "Pilot: Strzałki = wybór | OK = zatwierdź | 2x WSTECZ lub 🚪 ZAMKNIJ = wyjdź",
             size=12,
-            color="#fbbf24",
+            color="#38bdf8",
             weight=ft.FontWeight.BOLD,
         )
 
@@ -985,7 +991,7 @@ def main(page: ft.Page):
             "PODGLĄD POZYCJI",
             size=11,
             weight=ft.FontWeight.BOLD,
-            color="#fbbf24",
+            color="#38bdf8",
         )
         status_info_title = ft.Text(
             "Najedź kursorem na kanał, film lub serial",
@@ -997,7 +1003,7 @@ def main(page: ft.Page):
             "",
             size=13,
             weight=ft.FontWeight.BOLD,
-            color="#fbbf24",
+            color="#38bdf8",
         )
         status_info_sub = ft.Text(
             "Wystarczy podświetlić dowolną pozycję na liście po lewej stronie, aby w tym oknie natychmiast wyświetliły się informacje o programie TV (EPG), ocena TMDB, rok wydania oraz pełny opis fabuły.",
@@ -1040,7 +1046,7 @@ def main(page: ft.Page):
             expand=True,
             bgcolor="#091811",
             border_radius=12,
-            border=ft.border.all(2, "#ea580c"),
+            border=ft.border.all(2, "#38bdf8"),
             padding=14,
             visible=False,
         )
@@ -1051,7 +1057,7 @@ def main(page: ft.Page):
             expand=True,
             bgcolor="#091811",
             border_radius=12,
-            border=ft.border.all(2, "#fbbf24"),
+            border=ft.border.all(2, "#38bdf8"),
             padding=14,
             visible=False,
         )
@@ -1067,10 +1073,10 @@ def main(page: ft.Page):
         )
 
         now_playing_txt = ft.Text(
-            "▶ Pilot: ⬆️ na samą górę = 🔍 SZUKAJ | OK = Uruchom | ➡️ Prawy panel | ⬅️ Lista",
+            "▶ Pilot: OK = Odtwarzaj kanał | ⏮ KANAŁ - / ⏭ KANAŁ + = Zmień kanał bez wychodzenia!",
             weight=ft.FontWeight.BOLD,
             size=13,
-            color="#fbbf24",
+            color="#38bdf8",
         )
         header_dev_lbl = ft.Text(f"📺 {device_name} [{device_id}]", size=12, color="#34d399", weight=ft.FontWeight.BOLD)
         list_header_lbl = ft.Text("📂 LISTA KATEGORII", size=13, weight=ft.FontWeight.BOLD, color="#34d399")
@@ -1095,7 +1101,7 @@ def main(page: ft.Page):
                 status_info_meta.value = f"Sekcja: {state['kind'].upper()}  •  Naciśnij OK, aby otworzyć"
                 status_info_sub.value = (
                     "Przewijaj listę strzałkami ⬆️ ⬇️ na całej wysokości okna.\n"
-                    "Nad listą znajduje się stały przycisk 🔍 SZUKAJ — wyjedź strzałką ⬆️ na samą górę, aby wyszukać kanał lub film."
+                    "W VLC użyj przycisków ⏮ Następny / Poprzedni ⏭ na ekranie lub pilocie, aby przełączać kanały bez wychodzenia do menu!"
                 )
                 return
 
@@ -1259,12 +1265,79 @@ def main(page: ft.Page):
                 safe_ui_update()
             publish_status()
 
+        # =====================================================================
+        # ZMIANA KANAŁU BEZ WYCHODZENIA Z OGLĄDANIA (KANAŁ + / KANAŁ -)
+        # =====================================================================
+        def switch_live_channel_relative(step: int):
+            streams_list = state.get("filtered") or state.get("streams") or []
+            if not streams_list or not state.get("client"):
+                return
+            cur_item = state.get("current_item")
+            cur_uid = get_item_unique_id(cur_item) if cur_item else ""
+            cur_pos = 0
+            for idx, it in enumerate(streams_list):
+                if get_item_unique_id(it) == cur_uid:
+                    cur_pos = idx
+                    break
+            new_pos = (cur_pos + step) % len(streams_list)
+            next_item = streams_list[new_pos]
+
+            for b_idx, b_entry in enumerate(state.get("all_built_items", [])):
+                if b_entry.get("item") is next_item:
+                    state["list_idx"] = b_idx
+                    break
+
+            render_viewport()
+            on_stream_click(next_item)
+
+        # Wgrywanie całej bieżącej kategorii jako playlisty M3U do VLC (przełączanie Next/Prev bezpośrednio w VLC bez wychodzenia!)
+        def launch_category_playlist_in_vlc(_e=None):
+            streams_list = state.get("filtered") or state.get("streams") or []
+            if not streams_list or not state.get("client"):
+                if state.get("playing_url"):
+                    launch_vlc_intent(state["playing_url"], state["now_playing"])
+                return
+
+            cur_item = state.get("current_item")
+            cur_uid = get_item_unique_id(cur_item) if cur_item else ""
+            start_idx = 0
+            for idx, it in enumerate(streams_list):
+                if get_item_unique_id(it) == cur_uid:
+                    start_idx = idx
+                    break
+
+            ordered = streams_list[start_idx:] + streams_list[:start_idx]
+            ordered = ordered[:120]
+
+            m3u_lines = ["#EXTM3U"]
+            for it in ordered:
+                k = it.get("kind") or state["kind"]
+                if k == "series":
+                    continue
+                nm = (it.get("name") or it.get("title") or "Kanał").replace("\n", " ")
+                ext = it.get("container_extension", "ts" if k == "live" else "mp4") or ("ts" if k == "live" else "mp4")
+                u = state["client"].build_stream_url(k, it.get("stream_id"), ext, item=it)
+                if u:
+                    m3u_lines.append(f"#EXTINF:-1,{nm}")
+                    m3u_lines.append(u)
+
+            if len(m3u_lines) <= 2 and state.get("playing_url"):
+                launch_vlc_intent(state["playing_url"], state["now_playing"])
+                return
+
+            m3u_content = "\n".join(m3u_lines)
+            b64_m3u = base64.b64encode(m3u_content.encode("utf-8")).decode("ascii")
+            data_uri = f"data:audio/x-mpegurl;base64,{b64_m3u}"
+            now_playing_txt.value = "🚀 Wysłano listę kanałów do VLC — zmieniaj kanały przyciskami ⏮ / ⏭ w VLC bez wychodzenia!"
+            safe_ui_update()
+            threading.Thread(target=lambda: page.launch_url(data_uri), daemon=True).start()
+
         search_menu_buttons = []
         search_tf_input = ft.TextField(
             label="Wpisz szukaną nazwę (np. TVN, HBO, Batman)...",
             value="",
             bgcolor="#163828",
-            border_color="#fbbf24",
+            border_color="#38bdf8",
             color="white",
             text_size=15,
         )
@@ -1353,7 +1426,7 @@ def main(page: ft.Page):
             search_menu_buttons.extend([b_kbd, b_cur, b_live, b_vod, b_ser, b_clr, b_cls])
 
             search_panel_col.controls.append(
-                ft.Text("🔍 WYSZUKIWARKA IPTV BP (użyj strzałek ⬆️ ⬇️ oraz OK)", size=15, weight=ft.FontWeight.BOLD, color="#fbbf24")
+                ft.Text("🔍 WYSZUKIWARKA IPTV BP (użyj strzałek ⬆️ ⬇️ oraz OK)", size=15, weight=ft.FontWeight.BOLD, color="#38bdf8")
             )
             search_panel_col.controls.append(search_tf_input)
             search_panel_col.controls.extend(search_menu_buttons)
@@ -1362,8 +1435,8 @@ def main(page: ft.Page):
                 for i, b in enumerate(search_menu_buttons):
                     foc = (i == state["search_idx"])
                     base_t = b.data["base_text"]
-                    b.bgcolor = "#ea580c" if foc else "#163828"
-                    b.border = ft.border.all(3 if foc else 1, "#fde047" if foc else "#22543d")
+                    b.bgcolor = "#0284c7" if foc else "#163828"
+                    b.border = ft.border.all(3 if foc else 1, "#38bdf8" if foc else "#22543d")
                     b.data["text_ctrl"].color = "white"
                     b.data["text_ctrl"].value = f"▶  {base_t}" if foc else base_t
                 safe_ui_update()
@@ -1397,7 +1470,7 @@ def main(page: ft.Page):
             i_ctrl = ft.Text(
                 icon_char,
                 size=34 if is_large else 19,
-                color="#fca5a5" if is_danger else ("#fb923c" if title in ("Live TV", "Szukaj", "Ustawienia") else "#34d399"),
+                color="#fca5a5" if is_danger else ("#38bdf8" if title in ("Live TV", "Szukaj", "Ustawienia") else "#34d399"),
                 text_align=ft.TextAlign.CENTER,
             )
             content_layout = (
@@ -1618,7 +1691,7 @@ def main(page: ft.Page):
                         "Anuluj",
                         on_click=lambda _: (setattr(dlg, "open", False), app_state.update({"dialog_open": False}), safe_ui_update()),
                     ),
-                    ft.ElevatedButton("💾 Zapisz", on_click=_save, bgcolor="#ea580c", color="white"),
+                    ft.ElevatedButton("💾 Zapisz", on_click=_save, bgcolor="#0284c7", color="white"),
                 ],
                 on_dismiss=lambda _: app_state.update({"dialog_open": False}),
             )
@@ -1651,7 +1724,7 @@ def main(page: ft.Page):
                 return
             state["is_logging_in"] = True
             status_banner.value = "⏳ Łączenie z serwerem IPTV BP..."
-            status_banner.color = "#fbbf24"
+            status_banner.color = "#38bdf8"
             safe_ui_update()
 
             def _w():
@@ -1778,7 +1851,7 @@ def main(page: ft.Page):
                         ft.ElevatedButton(
                             f"{prefix}{idx + 1}. [{p_mode}] {p_name} ({p_host})",
                             on_click=lambda _e, pr=p: _select_p(pr),
-                            bgcolor="#ea580c" if is_act else "#163828",
+                            bgcolor="#0284c7" if is_act else "#163828",
                             color="white",
                             expand=True,
                         ),
@@ -1827,7 +1900,7 @@ def main(page: ft.Page):
             dlg = ft.AlertDialog(
                 title=ft.Text(title_str),
                 content=ft.Column([tf_in], tight=True),
-                actions=[ft.ElevatedButton("Zapisz", on_click=_save, bgcolor="#ea580c", color="white")],
+                actions=[ft.ElevatedButton("Zapisz", on_click=_save, bgcolor="#0284c7", color="white")],
                 on_dismiss=lambda _: app_state.update({"dialog_open": False}),
             )
             page.overlay.append(dlg)
@@ -1911,7 +1984,7 @@ def main(page: ft.Page):
             ])
 
             settings_panel_col.controls.append(
-                ft.Text("⚙️ MENU USTAWIEŃ (steruj strzałkami ⬆️ ⬇️ i OK, WSTECZ = zamknij)", size=14, weight=ft.FontWeight.BOLD, color="#fbbf24")
+                ft.Text("⚙️ MENU USTAWIEŃ (steruj strzałkami ⬆️ ⬇️ i OK, WSTECZ = zamknij)", size=14, weight=ft.FontWeight.BOLD, color="#38bdf8")
             )
             settings_panel_col.controls.extend(settings_menu_buttons)
 
@@ -1925,8 +1998,8 @@ def main(page: ft.Page):
                 for i, b in enumerate(settings_menu_buttons):
                     foc = (i == state["settings_idx"])
                     base_t = b.data["base_text"]
-                    b.bgcolor = "#ea580c" if foc else ("#7f1d1d" if b == b_s_exit else "#163828")
-                    b.border = ft.border.all(3 if foc else 1, "#fde047" if foc else "#22543d")
+                    b.bgcolor = "#0284c7" if foc else ("#7f1d1d" if b == b_s_exit else "#163828")
+                    b.border = ft.border.all(3 if foc else 1, "#38bdf8" if foc else "#22543d")
                     b.data["text_ctrl"].color = "white"
                     b.data["text_ctrl"].value = f"▶  {base_t}" if foc else base_t
                 safe_ui_update()
@@ -1946,15 +2019,15 @@ def main(page: ft.Page):
             for idx, b_top in enumerate(dash_top_buttons):
                 foc_top = (state["zone"] == "dash_top" and state["dash_top_idx"] == idx)
                 is_d = b_top.data.get("danger", False)
-                b_top.bgcolor = "#ea580c" if foc_top else ("#7f1d1d" if is_d else "#163828")
-                b_top.border = ft.border.all(3 if foc_top else 1, "#fde047" if foc_top else ("#ef4444" if is_d else "#34d399"))
+                b_top.bgcolor = "#0284c7" if foc_top else ("#7f1d1d" if is_d else "#163828")
+                b_top.border = ft.border.all(3 if foc_top else 1, "#38bdf8" if foc_top else ("#ef4444" if is_d else "#34d399"))
 
             for idx, tile in enumerate(dash_tiles):
                 is_foc = (state["zone"] == "dashboard" and state["dash_idx"] == idx)
                 is_d = tile.data.get("danger", False)
                 if is_foc:
-                    tile.bgcolor = "#dc2626" if is_d else "#ea580c"
-                    tile.border = ft.border.all(3, "#fde047")
+                    tile.bgcolor = "#dc2626" if is_d else "#0284c7"
+                    tile.border = ft.border.all(3, "#38bdf8")
                 else:
                     tile.bgcolor = "#7f1d1d" if is_d else "#112e22"
                     tile.border = ft.border.all(2 if is_d else 1, "#ef4444" if is_d else "#22543d")
@@ -1966,13 +2039,24 @@ def main(page: ft.Page):
             height=42,
         )
 
-        btn_vlc = make_tv_button("🚀 VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"]), height=42, expand=True)
+        # Prawy panel: dodano przyciski ⏮ KANAŁ - oraz ⏭ KANAŁ + i 📺 Lista VLC (zmiana kanałów bez wychodzenia)
+        btn_ch_prev = make_tv_button("⏮ Kanał -", lambda: switch_live_channel_relative(-1), height=42, expand=True)
+        btn_ch_next = make_tv_button("⏭ Kanał +", lambda: switch_live_channel_relative(1), height=42, expand=True)
+        btn_vlc_list = make_tv_button("📺 Lista VLC", launch_category_playlist_in_vlc, height=42, expand=True)
         btn_search_right = make_tv_button("🔍 Szukaj", open_search_panel, height=42, expand=True)
         btn_settings_menu = make_tv_button("⚙️ Ustawienia", open_settings_menu_dlg, height=42, expand=True)
         btn_home = make_tv_button("🏠 Menu", open_dashboard, height=42, expand=True)
         btn_exit_right = make_tv_button("🚪 ZAMKNIJ", force_exit_app, height=42, expand=True)
 
-        right_buttons = [btn_vlc, btn_search_right, btn_settings_menu, btn_home, btn_exit_right]
+        right_buttons = [
+            btn_ch_prev,
+            btn_ch_next,
+            btn_vlc_list,
+            btn_search_right,
+            btn_settings_menu,
+            btn_home,
+            btn_exit_right,
+        ]
 
         btn_remote_id = make_tv_button(f"🌐 Kod ID Odbiornika: {device_id} ({device_name})", open_remote_settings_dlg, height=42)
         btn_edit_srv = make_tv_button(f"🌐 Serwer: {creds['server'] or 'ustaw'}", lambda: open_field_editor("server", "Adres serwera (http://...)"), height=42)
@@ -1998,7 +2082,7 @@ def main(page: ft.Page):
             content=ft.Column(
                 [
                     ft.Row(
-                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V7.9 PRO", size=22, weight=ft.FontWeight.BOLD, color="#fb923c")],
+                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V8.0 PRO", size=22, weight=ft.FontWeight.BOLD, color="#38bdf8")],
                         alignment=ft.MainAxisAlignment.CENTER,
                         spacing=12,
                     ),
@@ -2065,7 +2149,7 @@ def main(page: ft.Page):
             bgcolor="#0f291d",
             padding=10,
             border_radius=10,
-            border=ft.border.all(2, "#ea580c"),
+            border=ft.border.all(2, "#0284c7"),
         )
         right_panel = ft.Container(
             expand=True,
@@ -2095,7 +2179,7 @@ def main(page: ft.Page):
                 ft.Row(
                     [
                         ft.Row([make_iptv_bp_badge(32), header_dev_lbl], spacing=10),
-                        ft.Text("⬅️ Strzałka w lewo = lista | ➡️ Prawy panel", size=12, color="#86efac"),
+                        ft.Text("⬅️ Lista | ➡️ Prawy panel | CH+/CH- = zmiana kanału", size=12, color="#86efac"),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
@@ -2103,10 +2187,11 @@ def main(page: ft.Page):
                 settings_overlay_box,
                 search_overlay_box,
                 now_playing_txt,
-                ft.Row(right_buttons, spacing=8),
+                ft.Row([btn_ch_prev, btn_ch_next, btn_vlc_list], spacing=6),
+                ft.Row([btn_search_right, btn_settings_menu, btn_home, btn_exit_right], spacing=6),
             ],
             expand=True,
-            spacing=8,
+            spacing=6,
         )
 
         dash_inner_view = ft.Container(
@@ -2117,9 +2202,6 @@ def main(page: ft.Page):
             padding=10,
         )
 
-        # =====================================================================
-        # POTRÓJNY STOS WIDOKÓW (PEWNA BLOKADA WYCHODZENIA 1 KLIKNIĘCIEM WSTECZ)
-        # =====================================================================
         guard_view_1 = ft.View(route="/g1", controls=[ft.Container(bgcolor="#0b1f15", expand=True)], padding=0, bgcolor="#0b1f15")
         guard_view_2 = ft.View(route="/g2", controls=[ft.Container(bgcolor="#0b1f15", expand=True)], padding=0, bgcolor="#0b1f15")
         main_app_view = ft.View(
@@ -2150,9 +2232,9 @@ def main(page: ft.Page):
 
             is_search_foc = (state["zone"] == "list_search")
             base_s_txt = btn_left_top_search.data["base_text"]
-            btn_left_top_search.bgcolor = "#ea580c" if is_search_foc else "#112e22"
-            btn_left_top_search.border = ft.border.all(3 if is_search_foc else 1, "#fde047" if is_search_foc else "#fbbf24")
-            btn_left_top_search.data["text_ctrl"].color = "white" if is_search_foc else "#fde047"
+            btn_left_top_search.bgcolor = "#0284c7" if is_search_foc else "#112e22"
+            btn_left_top_search.border = ft.border.all(3 if is_search_foc else 1, "#38bdf8" if is_search_foc else "#34d399")
+            btn_left_top_search.data["text_ctrl"].color = "white" if is_search_foc else "#38bdf8"
             btn_left_top_search.data["text_ctrl"].value = f"▶  {base_s_txt}" if is_search_foc else base_s_txt
 
             if total == 0:
@@ -2190,8 +2272,8 @@ def main(page: ft.Page):
                     expand=True,
                     padding=ft.padding.symmetric(horizontal=12, vertical=4),
                     border_radius=8,
-                    bgcolor="#ea580c" if is_foc else "#163828",
-                    border=ft.border.all(3 if is_foc else 1, "#fde047" if is_foc else "#22543d"),
+                    bgcolor="#0284c7" if is_foc else "#163828",
+                    border=ft.border.all(3 if is_foc else 1, "#38bdf8" if is_foc else "#22543d"),
                     alignment=ft.alignment.center_left,
                     on_click=lambda _e, fn=entry["action"]: fn(),
                 )
@@ -2207,8 +2289,8 @@ def main(page: ft.Page):
                 for i, item in enumerate(login_items):
                     is_foc = (state["zone"] == "login" and state["login_idx"] == i)
                     base_t = item.data["base_text"]
-                    item.bgcolor = "#ea580c" if is_foc else ("#059669" if i == 5 else ("#7f1d1d" if i == 7 else "#163828"))
-                    item.border = ft.border.all(3 if is_foc else 1, "#fde047" if is_foc else "#22543d")
+                    item.bgcolor = "#0284c7" if is_foc else ("#059669" if i == 5 else ("#7f1d1d" if i == 7 else "#163828"))
+                    item.border = ft.border.all(3 if is_foc else 1, "#38bdf8" if is_foc else "#22543d")
                     item.data["text_ctrl"].color = "white"
                     item.data["text_ctrl"].value = f"▶  {base_t}" if is_foc else base_t
                 safe_ui_update()
@@ -2223,18 +2305,18 @@ def main(page: ft.Page):
 
             left_panel.border = ft.border.all(
                 3 if state["zone"] in ("list", "list_search") else 1,
-                "#ea580c" if state["zone"] in ("list", "list_search") else "#22543d",
+                "#0284c7" if state["zone"] in ("list", "list_search") else "#22543d",
             )
             right_panel.border = ft.border.all(
                 3 if state["zone"] == "right" else 1,
-                "#ea580c" if state["zone"] == "right" else "#22543d",
+                "#0284c7" if state["zone"] == "right" else "#22543d",
             )
 
             for i, b in enumerate(right_buttons):
                 is_foc = (state["zone"] == "right" and state["right_idx"] == i)
                 base_t = b.data["base_text"]
-                b.bgcolor = "#ea580c" if is_foc else ("#7f1d1d" if b == btn_exit_right else "#163828")
-                b.border = ft.border.all(3 if is_foc else 1, "#fde047" if is_foc else "#22543d")
+                b.bgcolor = "#0284c7" if is_foc else ("#7f1d1d" if b == btn_exit_right else "#163828")
+                b.border = ft.border.all(3 if is_foc else 1, "#38bdf8" if is_foc else "#22543d")
                 b.data["text_ctrl"].color = "white"
                 b.data["text_ctrl"].value = f"▶ {base_t}" if is_foc else base_t
 
@@ -2350,6 +2432,12 @@ def main(page: ft.Page):
                     "action": back_to_cats,
                     "item": None,
                 })
+                if state["kind"] == "live" and raw:
+                    built.append({
+                        "label": "📺 OTWÓRZ CAŁĄ KATEGORIĘ W VLC (Zmieniaj kanały ⏮/⏭ bez wychodzenia!)",
+                        "action": launch_category_playlist_in_vlc,
+                        "item": None,
+                    })
 
             first_media_idx = len(built)
 
@@ -2564,6 +2652,8 @@ def main(page: ft.Page):
                 "mute",
                 "vol_up",
                 "vol_down",
+                "ch_up",
+                "ch_down",
                 "logout",
                 "refresh",
                 "reload_list",
@@ -2579,6 +2669,10 @@ def main(page: ft.Page):
                 toggle_play_pause()
             elif act == "stop":
                 stop_playback()
+            elif act in ("ch_up", "next_channel"):
+                switch_live_channel_relative(1)
+            elif act in ("ch_down", "prev_channel"):
+                switch_live_channel_relative(-1)
             elif act == "mute":
                 state["muted"] = not state["muted"]
                 publish_status()
@@ -2813,12 +2907,19 @@ def main(page: ft.Page):
             if dash_inner_view.visible:
                 total_built = len(state["all_built_items"])
 
-                if key in ("Page Down", "Channel Down") and total_built > 0:
+                # Bezpośrednia zmiana kanału na żywo przyciskami CH+ / CH- oraz Media Next / Previous
+                if key in ("Channel Up", "Media Track Next") and state["view_mode"] == "streams" and state["kind"] == "live":
+                    switch_live_channel_relative(1)
+                    return
+                elif key in ("Channel Down", "Media Track Previous") and state["view_mode"] == "streams" and state["kind"] == "live":
+                    switch_live_channel_relative(-1)
+                    return
+                elif key == "Page Down" and total_built > 0:
                     state["zone"] = "list"
                     state["list_idx"] = min(total_built - 1, state["list_idx"] + VISIBLE_ROWS)
                     render_viewport()
                     return
-                elif key in ("Page Up", "Channel Up") and total_built > 0:
+                elif key == "Page Up" and total_built > 0:
                     state["zone"] = "list"
                     state["list_idx"] = max(0, state["list_idx"] - VISIBLE_ROWS)
                     render_viewport()
