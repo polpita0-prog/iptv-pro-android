@@ -30,6 +30,10 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Accept Android Licenses
+        run: |
+          yes | flutter doctor --android-licenses || true
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
@@ -106,9 +110,8 @@ jobs:
         run: |
           flet build apk \
             --project "IPTV BP" \
-            --description "IPTV BP V8.1 DARK Remote Cloud" \
+            --description "IPTV BP V8.2 DARK Remote Cloud" \
             --org "com.iptv.bp.dark" \
-            --include-packages flet_video \
             --template /tmp/flet-template \
             --template-ref 0.24.1 \
             --verbose
