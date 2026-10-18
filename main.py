@@ -591,6 +591,8 @@ def main(page: ft.Page):
             "paused_in_bg": False,
             "preview_seq": 0,
             "osd_hide_seq": 0,
+            "num_buffer": "",
+            "num_seq": 0,
             "last_back_press_ts": 0.0,
             "last_ok_ts": 0.0,
             "video_ctrl": None,
@@ -831,6 +833,7 @@ def main(page: ft.Page):
             "now_playing": "Brak aktywnego strumienia",
             "playing_url": "",
             "current_item": None,
+            "previous_live_item": None,
             "is_playing": False,
             "paused": False,
             "volume": 100,
@@ -851,6 +854,24 @@ def main(page: ft.Page):
 
         VISIBLE_ROWS = 8
         OSD_VISIBLE_ROWS = 9
+
+        def get_active_channel_list() -> list:
+            return (
+                state.get("osd_channels")
+                or state.get("filtered")
+                or state.get("streams")
+                or favorites_items
+                or []
+            )
+
+        def find_channel_index_and_number(item) -> tuple:
+            ch_list = get_active_channel_list()
+            uid = get_item_unique_id(item) if item else ""
+            if uid:
+                for idx, it in enumerate(ch_list):
+                    if get_item_unique_id(it) == uid:
+                        return idx, idx + 1, len(ch_list)
+            return 0, 1, len(ch_list)
 
         def publish_status():
             if stop_event.is_set() or app_state["paused_in_bg"]:
@@ -1009,7 +1030,7 @@ def main(page: ft.Page):
             color="#a1a1aa",
         )
         status_info_sub = ft.Text(
-            "Najedź na pozycję po lewej stronie, aby wyświetlić opis i program TV (EPG).\nPodczas oglądania kanału naciśnij przycisk OK na pilocie, aby otworzyć półprzezroczystą listę kanałów bez wychodzenia z programu.",
+            "Najedź na pozycję po lewej stronie, aby wyświetlić opis i program TV (EPG).\nPodczas oglądania kanału użyj ⬆️/⬇️ lub cyfr 0-9, aby zmieniać kanały bez wychodzenia, albo naciśnij OK, aby otworzyć półprzezroczystą listę.",
             size=14,
             color="#d4d4d8",
             max_lines=9,
@@ -1076,7 +1097,7 @@ def main(page: ft.Page):
         )
 
         now_playing_txt = ft.Text(
-            "▶ Pilot: OK = Oglądaj (podczas oglądania OK = półprzezroczysta lista kanałów)",
+            "▶ Pilot: OK = Oglądaj (podczas oglądania ⬆️/⬇️ lub cyfry 0-9 = zmiana kanału, OK = lista kanałów)",
             weight=ft.FontWeight.BOLD,
             size=13,
             color="#a1a1aa",
@@ -1087,7 +1108,7 @@ def main(page: ft.Page):
         status_banner = ft.Text(f"🟢 Zdalny Cloud aktywny — Kod ID: {device_id}", color="#a1a1aa", size=13)
 
         # =====================================================================
-        # PEŁNOEKRANOWY ODTWARZACZ Z PÓŁPRZEZROCZYSTĄ LISTĄ KANAŁÓW I KATEGORII
+        # PEŁNOEKRANOWY ODTWARZACZ Z ZAPPINGIEM (⬆️/⬇️, 0-9, RECALL) I LISTĄ OSD
         # =====================================================================
         video_stage_container = ft.Container(
             expand=True,
@@ -1095,18 +1116,81 @@ def main(page: ft.Page):
             alignment=ft.alignment.center,
         )
 
-        mini_osd_title = ft.Text("", size=19, weight=ft.FontWeight.BOLD, color="#ffffff")
+        # Okienko wyboru numeru kanału z pilota (0-9) w prawym górnym rogu
+        num_osd_digits_txt = ft.Text("", size=28, weight=ft.FontWeight.BOLD, color="#f4f4f5")
+        num_osd_preview_txt = ft.Text("", size=13, weight=ft.FontWeight.BOLD, color="#a1a1aa")
+        num_osd_box = ft.Container(
+            content=ft.Column(
+                [num_osd_digits_txt, num_osd_preview_txt],
+                spacing=2,
+                tight=True,
+                horizontal_alignment=ft.CrossAxisAlignment.END,
+            ),
+            bgcolor="#D9111318",
+            padding=ft.padding.symmetric(horizontal=20, vertical=12),
+            border_radius=12,
+            border=ft.border.all(2, "#f4f4f5"),
+            top=24,
+            right=24,
+            visible=False,
+        )
+
+        # Dolny pasek informacyjny (Mini-OSD) przy przełączaniu kanałów ⬆️/⬇️ + przyciski dotykowe/mysz
+        mini_osd_num_badge = ft.Text("CH 1", size=14, weight=ft.FontWeight.BOLD, color="#f4f4f5")
+        mini_osd_title = ft.Text("", size=20, weight=ft.FontWeight.BOLD, color="#ffffff", no_wrap=True, expand=True)
         mini_osd_epg = ft.Text(
-            "OK = Półprzezroczysta lista kanałów  |  ⬆️/⬇️ lub CH+/CH- = Szybka zmiana kanału  |  WSTECZ = Wyjdź",
+            "⬆️/⬇️ lub CH+/CH- = Zmień kanał  |  0-9 = Wybierz numer  |  OK = Lista kanałów  |  ➡️ = Poprzedni kanał  |  WSTECZ = Wyjdź",
             size=13,
             color="#d4d4d8",
+            max_lines=2,
+            overflow=ft.TextOverflow.ELLIPSIS,
         )
+
+        def make_osd_quick_btn(lbl, fn):
+            return ft.Container(
+                content=ft.Text(lbl, size=12, weight=ft.FontWeight.BOLD, color="#f4f4f5"),
+                bgcolor="#27272a",
+                padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                border_radius=8,
+                border=ft.border.all(1, "#52525b"),
+                on_click=lambda _: fn(),
+            )
+
         mini_osd_bar = ft.Container(
-            content=ft.Column([mini_osd_title, mini_osd_epg], spacing=4, tight=True),
-            bgcolor="#BF111318",
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Container(
+                                content=mini_osd_num_badge,
+                                bgcolor="#3f3f46",
+                                padding=ft.padding.symmetric(horizontal=10, vertical=4),
+                                border_radius=6,
+                            ),
+                            mini_osd_title,
+                            ft.Row(
+                                [
+                                    make_osd_quick_btn("⏮ Poprzedni (⬇️)", lambda: switch_live_channel_relative(-1)),
+                                    make_osd_quick_btn("📋 Lista (OK)", lambda: open_osd_channel_overlay()),
+                                    make_osd_quick_btn("⏭ Następny (⬆️)", lambda: switch_live_channel_relative(1)),
+                                    make_osd_quick_btn("↺ Ostatni (➡️)", lambda: recall_previous_live_channel()),
+                                ],
+                                spacing=6,
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=12,
+                    ),
+                    mini_osd_epg,
+                ],
+                spacing=6,
+                tight=True,
+            ),
+            bgcolor="#CC111318",
             padding=ft.padding.symmetric(horizontal=22, vertical=14),
             border_radius=12,
-            border=ft.border.all(1, "#52525b"),
+            border=ft.border.all(1.5, "#52525b"),
             bottom=24,
             left=24,
             right=24,
@@ -1138,9 +1222,17 @@ def main(page: ft.Page):
                                 ft.Container(
                                     content=ft.Row(
                                         [
-                                            ft.Text("⬅️", size=14, color="#a1a1aa"),
+                                            ft.Container(
+                                                content=ft.Text("⬅️", size=14, color="#a1a1aa"),
+                                                on_click=lambda _: switch_osd_category_relative(-1),
+                                                padding=4,
+                                            ),
                                             ft.Container(content=osd_cat_header_txt, expand=True, alignment=ft.alignment.center),
-                                            ft.Text("➡️", size=14, color="#a1a1aa"),
+                                            ft.Container(
+                                                content=ft.Text("➡️", size=14, color="#a1a1aa"),
+                                                on_click=lambda _: switch_osd_category_relative(1),
+                                                padding=4,
+                                            ),
                                         ],
                                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                     ),
@@ -1177,7 +1269,7 @@ def main(page: ft.Page):
                                     osd_right_epg,
                                     ft.Divider(height=8, color="#3f3f46"),
                                     ft.Text(
-                                        "OK = Przełącz kanał bez wychodzenia   |   WSTECZ = Ukryj listę",
+                                        "OK = Przełącz kanał bez wychodzenia   |   0-9 = Wybierz numer   |   WSTECZ = Ukryj listę",
                                         size=12,
                                         color="#a1a1aa",
                                         weight=ft.FontWeight.BOLD,
@@ -1204,6 +1296,7 @@ def main(page: ft.Page):
                     video_stage_container,
                     mini_osd_bar,
                     channel_osd_overlay,
+                    num_osd_box,
                 ],
                 expand=True,
             ),
@@ -1217,7 +1310,7 @@ def main(page: ft.Page):
             cur_s = app_state["osd_hide_seq"]
 
             def _hider():
-                time.sleep(3.8)
+                time.sleep(4.0)
                 if cur_s != app_state["osd_hide_seq"] or stop_event.is_set():
                     return
                 if app_state["in_fullscreen_player"] and not app_state["osd_list_open"]:
@@ -1235,7 +1328,9 @@ def main(page: ft.Page):
                     epg_list = state["client"].get_short_epg(item.get("stream_id"))
                     if epg_list:
                         first_line = epg_list[0].splitlines()[0]
-                        mini_osd_epg.value = f"{first_line}   |   OK = Półprzezroczysta lista kanałów"
+                        mini_osd_epg.value = (
+                            f"{first_line}   |   ⬆️/⬇️ Zmień kanał  •  0-9 Numer  •  OK Lista kanałów"
+                        )
                         safe_ui_update()
 
                 threading.Thread(target=_w, daemon=True).start()
@@ -1369,7 +1464,7 @@ def main(page: ft.Page):
             threading.Thread(target=_load_c, daemon=True).start()
 
         def open_osd_channel_overlay():
-            channels = state.get("filtered") or state.get("streams") or favorites_items or []
+            channels = get_active_channel_list()
             state["osd_channels"] = channels
             cur_uid = get_item_unique_id(state.get("current_item"))
             found_i = 0
@@ -1404,6 +1499,8 @@ def main(page: ft.Page):
             app_state["video_ctrl"] = None
             app_state["in_fullscreen_player"] = False
             app_state["osd_list_open"] = False
+            app_state["num_buffer"] = ""
+            num_osd_box.visible = False
             channel_osd_overlay.visible = False
             fullscreen_player_view.visible = False
             video_stage_container.content = None
@@ -1411,6 +1508,84 @@ def main(page: ft.Page):
             state["zone"] = "list"
             build_full_list_data(keep_idx=True)
             publish_status()
+
+        # Obsługa wybierania numeru kanału cyframi 0-9 na pilocie bez wychodzenia z wideo
+        def commit_numeric_channel_jump():
+            buf = app_state.get("num_buffer", "")
+            app_state["num_buffer"] = ""
+            if not buf:
+                num_osd_box.visible = False
+                safe_ui_update()
+                return
+
+            ch_num = parse_int_safe(buf, 0)
+            ch_list = get_active_channel_list()
+            if 1 <= ch_num <= len(ch_list):
+                target_item = ch_list[ch_num - 1]
+                state["osd_idx"] = ch_num - 1
+                num_osd_box.visible = False
+                if app_state["osd_list_open"]:
+                    close_osd_channel_overlay()
+                on_stream_click(target_item)
+            else:
+                num_osd_preview_txt.value = f"❌ Brak kanału #{ch_num} (dostępne: 1-{len(ch_list)})"
+                safe_ui_update()
+
+                def _hide_err():
+                    time.sleep(1.2)
+                    if not app_state.get("num_buffer"):
+                        num_osd_box.visible = False
+                        safe_ui_update()
+
+                threading.Thread(target=_hide_err, daemon=True).start()
+
+        def handle_numeric_channel_digit(digit_char: str):
+            # Jeśli bufor jest pusty i użytkownik naciśnie '0', przełącz na ostatni oglądany kanał (RECALL)
+            if not app_state["num_buffer"] and digit_char == "0":
+                recall_previous_live_channel()
+                return
+
+            if len(app_state["num_buffer"]) >= 4:
+                app_state["num_buffer"] = digit_char
+            else:
+                app_state["num_buffer"] += digit_char
+
+            buf = app_state["num_buffer"]
+            ch_num = parse_int_safe(buf, 0)
+            ch_list = get_active_channel_list()
+
+            num_osd_digits_txt.value = f"📺 Kanał: {buf}_"
+            if 1 <= ch_num <= len(ch_list):
+                cand = ch_list[ch_num - 1]
+                cand_nm = cand.get("name") or cand.get("title") or "Kanał"
+                num_osd_preview_txt.value = f"▶ {ch_num}. {cand_nm} (OK = przełącz teraz)"
+            else:
+                num_osd_preview_txt.value = f"⚠️ Poza zakresem (1 - {len(ch_list)})"
+
+            num_osd_box.visible = True
+            safe_ui_update()
+
+            app_state["num_seq"] += 1
+            cur_nseq = app_state["num_seq"]
+
+            def _auto_commit():
+                time.sleep(1.35)
+                if cur_nseq != app_state["num_seq"] or stop_event.is_set():
+                    return
+                commit_numeric_channel_jump()
+
+            threading.Thread(target=_auto_commit, daemon=True).start()
+
+        def recall_previous_live_channel():
+            prev_it = state.get("previous_live_item")
+            if prev_it and get_item_unique_id(prev_it) != get_item_unique_id(state.get("current_item")):
+                if app_state["osd_list_open"]:
+                    close_osd_channel_overlay()
+                on_stream_click(prev_it)
+            else:
+                mini_osd_bar.visible = True
+                schedule_mini_osd_autohide()
+                safe_ui_update()
 
         def is_favorite(item):
             uid = get_item_unique_id(item)
@@ -1430,7 +1605,7 @@ def main(page: ft.Page):
                 status_info_meta.value = f"Sekcja: {state['kind'].upper()}  •  Naciśnij OK, aby otworzyć"
                 status_info_sub.value = (
                     "Przewijaj listę strzałkami ⬆️ ⬇️ na całej wysokości okna.\n"
-                    "Po włączeniu kanału naciśnij przycisk OK na pilocie, aby wyświetlić półprzezroczystą listę kanałów na ekranie wideo."
+                    "Po włączeniu kanału możesz zmieniać kanały bez wychodzenia klawiszami ⬆️/⬇️, CH+/CH-, cyframi 0-9 lub otworzyć listę przyciskiem OK."
                 )
                 return
 
@@ -1524,7 +1699,7 @@ def main(page: ft.Page):
             now_playing_txt.value = (
                 "🚀 Wybrano: Zewnętrzny odtwarzacz VLC"
                 if state["external_vlc_only"]
-                else "📺 Wybrano: Wbudowany odtwarzacz z półprzezroczystą listą kanałów (OK)"
+                else "📺 Wybrano: Wbudowany odtwarzacz z przełączaniem kanałów bez wychodzenia"
             )
             safe_ui_update()
 
@@ -1595,12 +1770,26 @@ def main(page: ft.Page):
 
         # Płynne przełączanie kanałów w aktywnym odtwarzaczu bez wychodzenia do menu
         def play_stream_url(url, title, item=None):
+            prev_curr = state.get("current_item")
+            if prev_curr and item and get_item_unique_id(prev_curr) != get_item_unique_id(item):
+                state["previous_live_item"] = prev_curr
+
             state["playing_url"] = url
             state["now_playing"] = title
             state["current_item"] = item
             state["is_playing"] = True
             state["paused"] = False
-            now_playing_txt.value = f"▶ Odtwarzanie: {title}"
+
+            ch_idx, ch_num, ch_total = find_channel_index_and_number(item)
+            state["osd_idx"] = ch_idx
+
+            # Synchronizuj pozycję na liście w tle, aby po wyjściu kursor był na aktualnie oglądanym kanale
+            for b_idx, b_entry in enumerate(state.get("all_built_items", [])):
+                if b_entry.get("item") and item and get_item_unique_id(b_entry.get("item")) == get_item_unique_id(item):
+                    state["list_idx"] = b_idx
+                    break
+
+            now_playing_txt.value = f"▶ Odtwarzanie [{ch_num}/{max(1, ch_total)}]: {title}"
 
             if state["external_vlc_only"]:
                 launch_vlc_intent(url, title)
@@ -1648,9 +1837,9 @@ def main(page: ft.Page):
                     app_state["video_ctrl"] = None
                     video_stage_container.content = ft.Column(
                         [
-                            ft.Text(f"▶ {title}", size=24, weight=ft.FontWeight.BOLD, color="white"),
+                            ft.Text(f"▶ {ch_num}. {title}", size=24, weight=ft.FontWeight.BOLD, color="white"),
                             ft.Text(
-                                "Naciśnij OK = Półprzezroczysta lista kanałów  |  ⬆️/⬇️ = Przełącz kanał",
+                                "⬆️/⬇️ lub CH+/CH- = Zmień kanał   |   0-9 = Wybierz numer   |   OK = Lista kanałów",
                                 size=15,
                                 color="#a1a1aa",
                             ),
@@ -1659,8 +1848,11 @@ def main(page: ft.Page):
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                     )
 
+            mini_osd_num_badge.value = f"KANAŁ {ch_num} / {max(1, ch_total)}"
             mini_osd_title.value = f"▶  {title}"
-            mini_osd_epg.value = "OK = Półprzezroczysta lista kanałów  |  ⬆️/⬇️ lub CH+/CH- = Szybka zmiana kanału  |  WSTECZ = Wyjdź"
+            mini_osd_epg.value = (
+                "⬆️/⬇️ lub CH+/CH- = Zmień kanał  |  0-9 = Wybierz numer  |  OK = Lista kanałów  |  ➡️ = Poprzedni kanał  |  WSTECZ = Wyjdź"
+            )
             mini_osd_bar.visible = True
             channel_osd_overlay.visible = False
             app_state["osd_list_open"] = False
@@ -1675,7 +1867,7 @@ def main(page: ft.Page):
             publish_status()
 
         def switch_live_channel_relative(step: int):
-            streams_list = state.get("osd_channels") or state.get("filtered") or state.get("streams") or favorites_items or []
+            streams_list = get_active_channel_list()
             if not streams_list or not state.get("client"):
                 return
             cur_item = state.get("current_item")
@@ -1688,12 +1880,6 @@ def main(page: ft.Page):
             new_pos = (cur_pos + step) % len(streams_list)
             next_item = streams_list[new_pos]
             state["osd_idx"] = new_pos
-
-            for b_idx, b_entry in enumerate(state.get("all_built_items", [])):
-                if b_entry.get("item") is next_item:
-                    state["list_idx"] = b_idx
-                    break
-
             on_stream_click(next_item)
 
         search_menu_buttons = []
@@ -2335,7 +2521,7 @@ def main(page: ft.Page):
 
             cur_it = state.get("current_item")
             fav_lbl = "⭐ Usuń bieżącą pozycję z Ulubionych" if (cur_it and is_favorite(cur_it)) else "⭐ Dodaj bieżącą pozycję do Ulubionych"
-            eng_lbl = "🎬 Odtwarzacz: Zewnętrzny VLC" if state["external_vlc_only"] else "📺 Odtwarzacz: Wbudowany (Półprzezroczysta lista pod OK)"
+            eng_lbl = "🎬 Odtwarzacz: Zewnętrzny VLC" if state["external_vlc_only"] else "📺 Odtwarzacz: Wbudowany (Zapping ⬆️/⬇️, 0-9 i lista pod OK)"
 
             b_s_fav = make_tv_button(fav_lbl, _act_fav, height=36)
             b_s_pl = make_tv_button(f"🇵🇱 Filtr 'Tylko Polskie': {'WŁĄCZONY' if state['only_pl'] else 'WYŁĄCZONY'}", _act_only_pl, height=36)
@@ -2371,7 +2557,7 @@ def main(page: ft.Page):
                 set_tv_button_text(b_s_vmode, VLC_MODE_LABELS[state["vlc_mode"]])
                 set_tv_button_text(
                     b_s_eng,
-                    "🎬 Odtwarzacz: Zewnętrzny VLC" if state["external_vlc_only"] else "📺 Odtwarzacz: Wbudowany (Półprzezroczysta lista pod OK)",
+                    "🎬 Odtwarzacz: Zewnętrzny VLC" if state["external_vlc_only"] else "📺 Odtwarzacz: Wbudowany (Zapping ⬆️/⬇️, 0-9 i lista pod OK)",
                 )
                 style_settings_menu()
 
@@ -2452,7 +2638,7 @@ def main(page: ft.Page):
             content=ft.Column(
                 [
                     ft.Row(
-                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V8.2 DARK", size=22, weight=ft.FontWeight.BOLD, color="#e4e4e7")],
+                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V8.4 DARK", size=22, weight=ft.FontWeight.BOLD, color="#e4e4e7")],
                         alignment=ft.MainAxisAlignment.CENTER,
                         spacing=12,
                     ),
@@ -3119,6 +3305,11 @@ def main(page: ft.Page):
             rebuild_guard_views()
 
             if app_state["in_fullscreen_player"]:
+                if app_state.get("num_buffer"):
+                    app_state["num_buffer"] = ""
+                    num_osd_box.visible = False
+                    safe_ui_update()
+                    return
                 if app_state["osd_list_open"]:
                     close_osd_channel_overlay()
                 else:
@@ -3161,6 +3352,9 @@ def main(page: ft.Page):
             app_state["last_ok_ts"] = now
 
             if app_state["in_fullscreen_player"]:
+                if app_state.get("num_buffer"):
+                    commit_numeric_channel_jump()
+                    return
                 if not app_state["osd_list_open"]:
                     open_osd_channel_overlay()
                 else:
@@ -3198,13 +3392,30 @@ def main(page: ft.Page):
                 elif state["zone"] == "right":
                     right_buttons[state["right_idx"]].data["action"]()
 
+        def extract_digit_from_key(k_str: str):
+            if not k_str:
+                return None
+            if len(k_str) == 1 and k_str.isdigit():
+                return k_str
+            low = k_str.lower()
+            if low.startswith("digit ") and len(low) == 7 and low[-1].isdigit():
+                return low[-1]
+            if low.startswith("numpad ") and len(low) == 8 and low[-1].isdigit():
+                return low[-1]
+            return None
+
         def on_key_event(e: ft.KeyboardEvent):
             key = e.key
+            digit = extract_digit_from_key(key)
 
             # =================================================================
             # STEROWANIE PODCZAS OGLĄDANIA KANAŁU NA PEŁNYM EKRANIE (BEZ WYCHODZENIA)
             # =================================================================
             if app_state["in_fullscreen_player"]:
+                if digit is not None:
+                    handle_numeric_channel_digit(digit)
+                    return
+
                 if app_state["osd_list_open"]:
                     channels = state.get("osd_channels", [])
                     if key == "Arrow Down" and channels:
@@ -3239,9 +3450,10 @@ def main(page: ft.Page):
                         # Szybkie przełączenie na poprzedni kanał bez otwierania menu
                         switch_live_channel_relative(-1)
                     elif key == "Arrow Right":
-                        launch_vlc_intent(state["playing_url"], state["now_playing"])
+                        # Szybki powrót do poprzednio oglądanego kanału (RECALL)
+                        recall_previous_live_channel()
                     elif key in ("Backspace", "Escape", "Browser Back", "Go Back"):
-                        exit_fullscreen_player()
+                        handle_universal_back()
                 return
 
             if app_state["search_open"] and search_menu_buttons:
