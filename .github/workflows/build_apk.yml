@@ -1,120 +1,120 @@
-name: Build Android APK
+name: Build IPTV BP Dark APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
   build-apk:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: Set up Java JDK 17
+      - name: Setup Java (JDK 17)
         uses: actions/setup-java@v4
         with:
-          distribution: "temurin"
-          java-version: "17"
+          distribution: 'temurin'
+          java-version: '17'
 
-      - name: Set up Flutter
+      - name: Setup Flutter 3.24.3
         uses: subosito/flutter-action@v2
         with:
-          channel: "stable"
+          flutter-version: '3.24.3'
+          channel: 'stable'
+          cache: true
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "flet==0.24.1" requests urllib3 pillow
+          pip install flet==0.24.1 pillow requests urllib3
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f wymagania.txt ]; then pip install -r wymagania.txt; fi
 
-      - name: Generate Dark Graphite Icon (IPTV BP)
+      - name: Generuj ciemna stonowana ikone IPTV BP
         run: |
-          python - << 'EOF'
+          mkdir -p assets
+          python3 -c "
           import os
           from PIL import Image, ImageDraw, ImageFont
+          img = Image.new('RGBA', (512, 512), (16, 18, 22, 255))
+          d = ImageDraw.Draw(img)
+          d.rounded_rectangle([16, 16, 496, 496], radius=90, fill='#1c1f26', outline='#52525b', width=12)
+          d.rounded_rectangle([36, 36, 476, 476], radius=74, fill='#121418', outline='#2e323d', width=4)
+          fp = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
+          f1 = ImageFont.truetype(fp, 120) if os.path.exists(fp) else ImageFont.load_default()
+          f2 = ImageFont.truetype(fp, 130) if os.path.exists(fp) else ImageFont.load_default()
+          d.text((256, 195), 'IPTV', fill='#e4e4e7', anchor='mm', font=f1)
+          d.text((256, 335), 'BP', fill='#71717a', anchor='mm', font=f2)
+          for n in ['icon.png', 'icon_android.png', 'icon_ios.png', 'icon_web.png', 'splash.png', 'splash_android.png']:
+              img.save(os.path.join('assets', n))
+          "
 
-          os.makedirs("assets", exist_ok=True)
-          img = Image.new("RGBA", (512, 512), (16, 18, 22, 255))
-          draw = ImageDraw.Draw(img)
-
-          draw.rounded_rectangle([16, 16, 496, 496], radius=90, fill="#1c1f26", outline="#52525b", width=12)
-          draw.rounded_rectangle([36, 36, 476, 476], radius=74, fill="#14161b", outline="#3f3f46", width=4)
-
-          font_paths = [
-              "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-              "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-          ]
-          f_top = ImageFont.load_default()
-          f_bot = ImageFont.load_default()
-          for p in font_paths:
-              if os.path.exists(p):
-                  f_top = ImageFont.truetype(p, 125)
-                  f_bot = ImageFont.truetype(p, 135)
-                  break
-
-          draw.text((256, 195), "IPTV", fill="#f4f4f5", anchor="mm", font=f_top)
-          draw.text((256, 340), "BP", fill="#a1a1aa", anchor="mm", font=f_bot)
-
-          for name in ["icon.png", "icon_android.png", "icon_ios.png", "icon_web.png", "splash.png", "splash_android.png"]:
-              img.save(os.path.join("assets", name))
-          EOF
-
-      - name: Prepare pyproject.toml for Dark Icon and Video
+      - name: Prepare patched Flet template (Gradle + SDK 36 + Android TV VLC)
         run: |
-          cat << 'EOF' > pyproject.toml
-          [project]
-          name = "iptv_bp_dark"
-          version = "8.1.0"
-          description = "IPTV BP V8.1 DARK Android TV"
-          readme = "README.md"
-          requires-python = ">=3.9"
-          dependencies = [
-              "flet==0.24.1",
-              "requests>=2.31.0",
-              "urllib3",
-          ]
+          git clone --branch 0.24.1 https://github.com/flet-dev/flet-build-template.git /tmp/flet-template
+          cd /tmp/flet-template
+          python3 -c '
+          with open("{{cookiecutter.out_dir}}/pubspec.yaml", "r") as f:
+              pub = f.read()
+          pub = pub.replace("wakelock_plus: ^1.2.5", "wakelock_plus: 1.2.8")
+          pub = pub.replace("package_info_plus: ^8.0.0", "package_info_plus: 8.0.2")
+          with open("{{cookiecutter.out_dir}}/pubspec.yaml", "w") as f:
+              f.write(pub)
 
-          [tool.flet]
-          org = "com.iptv.bp.dark"
-          product = "IPTV BP"
-          company = "IPTV BP Cloud"
-          copyright = "Copyright (C) 2026"
+          gradle_path = "{{cookiecutter.out_dir}}/android/app/build.gradle"
+          with open(gradle_path, "r") as f:
+              g = f.read()
+          g = g.replace("compileSdkVersion flutter.compileSdkVersion", "compileSdk = 36\n    compileSdkVersion flutter.compileSdkVersion")
+          with open(gradle_path, "w") as f:
+              f.write(g)
 
-          [tool.flet.app]
-          path = "."
-          assets_dir = "assets"
+          manifest_path = "{{cookiecutter.out_dir}}/android/app/src/main/AndroidManifest.xml"
+          with open(manifest_path, "r") as f:
+              manifest = f.read()
+          queries_patch = """    <queries>
+                  <package android:name="org.videolan.vlc" />
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:scheme="vlc" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:scheme="http" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.VIEW" />
+                      <data android:scheme="https" />
+                  </intent>
+              </queries>
+          </manifest>"""
+          manifest = manifest.replace("</manifest>", queries_patch)
+          with open(manifest_path, "w") as f:
+              f.write(manifest)
+          '
+          git config user.email "builder@localhost"
+          git config user.name "Builder"
+          git commit -am "Fix SDK 36 and Android TV VLC queries"
 
-          [tool.flet.android]
-          adaptive_icon_background = "#14161b"
-
-          [tool.flet.splash]
-          color = "#101216"
-          dark_color = "#101216"
-          web = false
-          ios = false
-          android = true
-
-          [tool.flet.flutter.pubspec.dependency_overrides]
-          wakelock_plus = "1.2.8"
-          wakelock_plus_platform_interface = "1.2.1"
-          package_info_plus = "8.0.2"
-          package_info_plus_platform_interface = "3.0.1"
-          web = "0.5.1"
-          EOF
-
-      - name: Build Android APK with Flet Video
+      - name: Build APK with Flet
         run: |
-          flet build apk --include-packages flet_video --project "IPTV BP" --org "com.iptv.bp.dark" --yes
+          flet build apk \
+            --project "IPTV BP" \
+            --description "IPTV BP V8.1 DARK Remote Cloud" \
+            --org "com.iptv.bp.dark" \
+            --include-packages flet_video \
+            --template /tmp/flet-template \
+            --template-ref 0.24.1 \
+            --verbose
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: IPTV-BP-Dark-APK
+          name: IPTV-BP-DARK-APK
           path: build/apk/*.apk
