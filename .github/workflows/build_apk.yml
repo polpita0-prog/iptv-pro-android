@@ -100,6 +100,24 @@ jobs:
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
+
+        - name: Generuj ciemna stonowana ikone IPTV BP
+        run: |
+          pip install pillow
+          mkdir -p assets
+          python -c "
+          from PIL import Image, ImageDraw
+          img = Image.new('RGBA', (512, 512), (20, 22, 27, 255))
+          d = ImageDraw.Draw(img)
+          d.rounded_rectangle([18, 18, 494, 494], radius=90, fill='#1f222a', outline='#52525b', width=10)
+          d.text((256, 210), 'IPTV', fill='#e4e4e7', anchor='mm', font_size=115)
+          d.text((256, 335), 'BP', fill='#71717a', anchor='mm', font_size=110)
+          img.save('assets/icon.png')
+          img.save('assets/icon_android.png')
+          "
+
+      - name: Build APK
+        run: flet build apk --include-packages flet_video --project "IPTV BP" --org "com.iptv.bp.dark"
         with:
           name: IPTV-V4.4-PRO-APK
           path: build/apk/*.apk
