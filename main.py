@@ -13,6 +13,17 @@ import uuid
 import flet as ft
 import requests
 
+# Sprawdzamy czy środowisko posiada zewnętrzny moduł flet_video
+try:
+    import flet_video as ftv
+     VideoControlClass = ftv.Video
+     VideoMediaClass = ftv.VideoMedia
+    HAS_FLET_VIDEO_PKG = True
+except ImportError:
+    VideoControlClass = getattr(ft, "Video", None)
+    VideoMediaClass = getattr(ft, "VideoMedia", None)
+    HAS_FLET_VIDEO_PKG = False
+
 TMDB_API_KEY = "6e2d327ee657c8671b3eda952cd260a0"
 
 DEFAULT_HEADERS = {
@@ -609,6 +620,9 @@ def main(page: ft.Page):
                 "profiles": [],
                 "processed_ids": [],
                 "auto_vlc": False,
+                # Domyślnie wyłączamy ryzykowny ft.Video, chyba że zainstalowano flet_video
+                "use_native_video_ctrl": bool(HAS_FLET_VIDEO_PKG),
+                "auto_launch_vlc_on_zap": True,
                 "auto_login": True,
                 "only_pl": False,
                 "vlc_mode": "vlc_clean",
@@ -720,6 +734,8 @@ def main(page: ft.Page):
         profiles = list(cache_get("profiles", []))
         processed_ids = set(cache_get("processed_ids", []))
         auto_vlc_saved = cache_get("auto_vlc", False)
+        use_native_vid_saved = cache_get("use_native_video_ctrl", bool(HAS_FLET_VIDEO_PKG))
+        auto_vlc_zap_saved = cache_get("auto_launch_vlc_on_zap", True)
         auto_login_saved = cache_get("auto_login", True)
         only_pl_saved = cache_get("only_pl", False)
         saved_vlc_mode = cache_get("vlc_mode", "vlc_clean")
@@ -839,6 +855,8 @@ def main(page: ft.Page):
             "volume": 100,
             "muted": False,
             "external_vlc_only": bool(auto_vlc_saved),
+            "use_native_video_ctrl": bool(use_native_vid_saved and HAS_FLET_VIDEO_PKG),
+            "auto_launch_vlc_on_zap": bool(auto_vlc_zap_saved),
             "auto_login": bool(auto_login_saved),
             "is_logging_in": False,
             "vlc_mode": saved_vlc_mode,
@@ -1108,15 +1126,32 @@ def main(page: ft.Page):
         status_banner = ft.Text(f"🟢 Zdalny Cloud aktywny — Kod ID: {device_id}", color="#a1a1aa", size=13)
 
         # =====================================================================
-        # PEŁNOEKRANOWY ODTWARZACZ Z ZAPPINGIEM (⬆️/⬇️, 0-9, RECALL) I LISTĄ OSD
+        # PEŁNOEKRANOWY EKRAN KANAŁU Z ZAPPINGIEM (BEZ BŁĘDU UNKNOWN CONTROL: VIDEO)
         # =====================================================================
         video_stage_container = ft.Container(
             expand=True,
-            bgcolor="#000000",
+            bgcolor="#0b0d11",
             alignment=ft.alignment.center,
         )
 
-        # Okienko wyboru numeru kanału z pilota (0-9) w prawym górnym rogu
+        stage_logo_img = ft.Image(
+            src="",
+            width=150,
+            height=150,
+            fit=ft.ImageFit.CONTAIN,
+            border_radius=14,
+            visible=False,
+        )
+        stage_ch_badge = ft.Text("KANAŁ 1", size=14, weight=ft.FontWeight.BOLD, color="#f4f4f5")
+        stage_ch_title = ft.Text("", size=28, weight=ft.FontWeight.BOLD, color="#ffffff", text_align=ft.TextAlign.CENTER)
+        stage_ch_epg = ft.Text(
+            "Trwa ładowanie informacji o programie (EPG)...",
+            size=15,
+            color="#d4d4d8",
+            text_align=ft.TextAlign.CENTER,
+            max_lines=5,
+        )
+
         num_osd_digits_txt = ft.Text("", size=28, weight=ft.FontWeight.BOLD, color="#f4f4f5")
         num_osd_preview_txt = ft.Text("", size=13, weight=ft.FontWeight.BOLD, color="#a1a1aa")
         num_osd_box = ft.Container(
@@ -1135,7 +1170,6 @@ def main(page: ft.Page):
             visible=False,
         )
 
-        # Dolny pasek informacyjny (Mini-OSD) przy przełączaniu kanałów ⬆️/⬇️ + przyciski dotykowe/mysz
         mini_osd_num_badge = ft.Text("CH 1", size=14, weight=ft.FontWeight.BOLD, color="#f4f4f5")
         mini_osd_title = ft.Text("", size=20, weight=ft.FontWeight.BOLD, color="#ffffff", no_wrap=True, expand=True)
         mini_osd_epg = ft.Text(
@@ -1146,10 +1180,10 @@ def main(page: ft.Page):
             overflow=ft.TextOverflow.ELLIPSIS,
         )
 
-        def make_osd_quick_btn(lbl, fn):
+        def make_osd_quick_btn(lbl, fn, bg="#27272a"):
             return ft.Container(
                 content=ft.Text(lbl, size=12, weight=ft.FontWeight.BOLD, color="#f4f4f5"),
-                bgcolor="#27272a",
+                bgcolor=bg,
                 padding=ft.padding.symmetric(horizontal=12, vertical=6),
                 border_radius=8,
                 border=ft.border.all(1, "#52525b"),
@@ -1174,6 +1208,7 @@ def main(page: ft.Page):
                                     make_osd_quick_btn("📋 Lista (OK)", lambda: open_osd_channel_overlay()),
                                     make_osd_quick_btn("⏭ Następny (⬆️)", lambda: switch_live_channel_relative(1)),
                                     make_osd_quick_btn("↺ Ostatni (➡️)", lambda: recall_previous_live_channel()),
+                                    make_osd_quick_btn("🚀 Otwórz w VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"]), bg="#3f3f46"),
                                 ],
                                 spacing=6,
                             ),
@@ -1305,15 +1340,67 @@ def main(page: ft.Page):
             bgcolor="#000000",
         )
 
+        def build_safe_stage_card(ch_num: int, ch_total: int, title: str, item=None):
+            icon_url = (item or {}).get("stream_icon") or (item or {}).get("cover") or ""
+            if icon_url and icon_url.startswith("http"):
+                stage_logo_img.src = icon_url
+                stage_logo_img.visible = True
+            else:
+                stage_logo_img.visible = False
+
+            stage_ch_badge.value = f"📺 AKTYWNY KANAŁ {ch_num} / {max(1, ch_total)}"
+            stage_ch_title.value = title
+            stage_ch_epg.value = "⏳ Pobieranie aktualnego programu TV (EPG)..."
+
+            return ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Container(
+                            content=stage_ch_badge,
+                            bgcolor="#27272a",
+                            padding=ft.padding.symmetric(horizontal=14, vertical=6),
+                            border_radius=20,
+                            border=ft.border.all(1, "#52525b"),
+                        ),
+                        stage_logo_img,
+                        stage_ch_title,
+                        ft.Container(
+                            content=stage_ch_epg,
+                            width=680,
+                            padding=14,
+                            bgcolor="#14161d",
+                            border_radius=12,
+                            border=ft.border.all(1, "#2e323d"),
+                        ),
+                        ft.Row(
+                            [
+                                make_osd_quick_btn("⏮ Poprzedni kanał (⬇️)", lambda: switch_live_channel_relative(-1)),
+                                make_osd_quick_btn("📋 Półprzezroczysta lista (OK)", lambda: open_osd_channel_overlay(), bg="#3f3f46"),
+                                make_osd_quick_btn("⏭ Następny kanał (⬆️)", lambda: switch_live_channel_relative(1)),
+                                make_osd_quick_btn("🚀 Otwórz wideo w VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"])),
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
+                            spacing=10,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=14,
+                ),
+                alignment=ft.alignment.center,
+                expand=True,
+                padding=30,
+            )
+
         def schedule_mini_osd_autohide():
             app_state["osd_hide_seq"] += 1
             cur_s = app_state["osd_hide_seq"]
 
             def _hider():
-                time.sleep(4.0)
+                time.sleep(4.2)
                 if cur_s != app_state["osd_hide_seq"] or stop_event.is_set():
                     return
-                if app_state["in_fullscreen_player"] and not app_state["osd_list_open"]:
+                if app_state["in_fullscreen_player"] and not app_state["osd_list_open"] and state["use_native_video_ctrl"]:
                     mini_osd_bar.visible = False
                     safe_ui_update()
 
@@ -1331,9 +1418,15 @@ def main(page: ft.Page):
                         mini_osd_epg.value = (
                             f"{first_line}   |   ⬆️/⬇️ Zmień kanał  •  0-9 Numer  •  OK Lista kanałów"
                         )
-                        safe_ui_update()
+                        stage_ch_epg.value = "\n\n".join(epg_list[:2])
+                    else:
+                        stage_ch_epg.value = "Brak danych EPG dla tego kanału.\nUżyj strzałek ⬆️/⬇️ lub cyfr 0-9, aby przełączać kanały, albo naciśnij OK, aby otworzyć listę."
+                    safe_ui_update()
 
                 threading.Thread(target=_w, daemon=True).start()
+            else:
+                stage_ch_epg.value = "Pozycja gotowa do odtwarzania."
+                safe_ui_update()
 
         def update_osd_channel_epg_async(item):
             if not isinstance(item, dict):
@@ -1509,7 +1602,6 @@ def main(page: ft.Page):
             build_full_list_data(keep_idx=True)
             publish_status()
 
-        # Obsługa wybierania numeru kanału cyframi 0-9 na pilocie bez wychodzenia z wideo
         def commit_numeric_channel_jump():
             buf = app_state.get("num_buffer", "")
             app_state["num_buffer"] = ""
@@ -1540,7 +1632,6 @@ def main(page: ft.Page):
                 threading.Thread(target=_hide_err, daemon=True).start()
 
         def handle_numeric_channel_digit(digit_char: str):
-            # Jeśli bufor jest pusty i użytkownik naciśnie '0', przełącz na ostatni oglądany kanał (RECALL)
             if not app_state["num_buffer"] and digit_char == "0":
                 recall_previous_live_channel()
                 return
@@ -1697,9 +1788,29 @@ def main(page: ft.Page):
             state["external_vlc_only"] = not state["external_vlc_only"]
             cache_set("auto_vlc", state["external_vlc_only"])
             now_playing_txt.value = (
-                "🚀 Wybrano: Zewnętrzny odtwarzacz VLC"
+                "🚀 Wybrano: Bezpośredni start VLC (bez ekranu OSD)"
                 if state["external_vlc_only"]
-                else "📺 Wybrano: Wbudowany odtwarzacz z przełączaniem kanałów bez wychodzenia"
+                else "📺 Wybrano: Pełnoekranowy Zapping OSD (⬆️/⬇️, 0-9, lista OK)"
+            )
+            safe_ui_update()
+
+        def toggle_native_video_ctrl(_e=None):
+            state["use_native_video_ctrl"] = not state["use_native_video_ctrl"]
+            cache_set("use_native_video_ctrl", state["use_native_video_ctrl"])
+            now_playing_txt.value = (
+                "🎬 Kontrolka ft.Video WŁĄCZONA (wymaga zbudowanego APK z flet_video)"
+                if state["use_native_video_ctrl"]
+                else "🛡️ Bezpieczny Ekran Zappingu OSD WŁĄCZONY (brak błędu Unknown control: video)"
+            )
+            safe_ui_update()
+
+        def toggle_auto_vlc_on_zap(_e=None):
+            state["auto_launch_vlc_on_zap"] = not state["auto_launch_vlc_on_zap"]
+            cache_set("auto_launch_vlc_on_zap", state["auto_launch_vlc_on_zap"])
+            now_playing_txt.value = (
+                "🚀 Auto-start VLC przy zmianie kanału: WŁĄCZONY"
+                if state["auto_launch_vlc_on_zap"]
+                else "📺 Auto-start VLC przy zmianie kanału: WYŁĄCZONY (uruchamiaj ręcznie przyciskiem)"
             )
             safe_ui_update()
 
@@ -1783,7 +1894,6 @@ def main(page: ft.Page):
             ch_idx, ch_num, ch_total = find_channel_index_and_number(item)
             state["osd_idx"] = ch_idx
 
-            # Synchronizuj pozycję na liście w tle, aby po wyjściu kursor był na aktualnie oglądanym kanale
             for b_idx, b_entry in enumerate(state.get("all_built_items", [])):
                 if b_entry.get("item") and item and get_item_unique_id(b_entry.get("item")) == get_item_unique_id(item):
                     state["list_idx"] = b_idx
@@ -1796,57 +1906,54 @@ def main(page: ft.Page):
                 publish_status()
                 return
 
-            existing_vid = app_state.get("video_ctrl")
-            if app_state["in_fullscreen_player"] and existing_vid is not None:
-                # Podmiana strumienia w locie bez zamykania pełnego ekranu
-                switched_in_place = False
-                try:
-                    existing_vid.playlist_add(ft.VideoMedia(url))
-                    existing_vid.playlist_remove(0)
-                    existing_vid.jump_to(0)
-                    existing_vid.play()
-                    switched_in_place = True
-                except Exception:
+            # Jeśli włączono natywną kontrolkę Video (tylko gdy zainstalowano flet_video), używamy jej.
+            # W przeciwnym razie budujemy bezpieczny ekran Zappingu OSD, który NIGDY nie wywołuje błędu "unknown control: video".
+            if state["use_native_video_ctrl"] and VideoControlClass is not None and VideoMediaClass is not None:
+                existing_vid = app_state.get("video_ctrl")
+                if app_state["in_fullscreen_player"] and existing_vid is not None:
                     switched_in_place = False
-
-                if not switched_in_place:
                     try:
-                        new_vid = ft.Video(
-                            playlist=[ft.VideoMedia(url)],
+                        existing_vid.playlist_add(VideoMediaClass(url))
+                        existing_vid.playlist_remove(0)
+                        existing_vid.jump_to(0)
+                        existing_vid.play()
+                        switched_in_place = True
+                    except Exception:
+                        switched_in_place = False
+
+                    if not switched_in_place:
+                        try:
+                            new_vid = VideoControlClass(
+                                playlist=[VideoMediaClass(url)],
+                                autoplay=True,
+                                show_controls=False,
+                                expand=True,
+                                fill_color="#000000",
+                            )
+                            app_state["video_ctrl"] = new_vid
+                            video_stage_container.content = new_vid
+                        except Exception:
+                            app_state["video_ctrl"] = None
+                            video_stage_container.content = build_safe_stage_card(ch_num, ch_total, title, item)
+                else:
+                    try:
+                        vid_ctrl = VideoControlClass(
+                            playlist=[VideoMediaClass(url)],
                             autoplay=True,
                             show_controls=False,
                             expand=True,
                             fill_color="#000000",
                         )
-                        app_state["video_ctrl"] = new_vid
-                        video_stage_container.content = new_vid
+                        app_state["video_ctrl"] = vid_ctrl
+                        video_stage_container.content = vid_ctrl
                     except Exception:
-                        pass
+                        app_state["video_ctrl"] = None
+                        video_stage_container.content = build_safe_stage_card(ch_num, ch_total, title, item)
             else:
-                try:
-                    vid_ctrl = ft.Video(
-                        playlist=[ft.VideoMedia(url)],
-                        autoplay=True,
-                        show_controls=False,
-                        expand=True,
-                        fill_color="#000000",
-                    )
-                    app_state["video_ctrl"] = vid_ctrl
-                    video_stage_container.content = vid_ctrl
-                except Exception:
-                    app_state["video_ctrl"] = None
-                    video_stage_container.content = ft.Column(
-                        [
-                            ft.Text(f"▶ {ch_num}. {title}", size=24, weight=ft.FontWeight.BOLD, color="white"),
-                            ft.Text(
-                                "⬆️/⬇️ lub CH+/CH- = Zmień kanał   |   0-9 = Wybierz numer   |   OK = Lista kanałów",
-                                size=15,
-                                color="#a1a1aa",
-                            ),
-                        ],
-                        alignment=ft.MainAxisAlignment.CENTER,
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    )
+                app_state["video_ctrl"] = None
+                video_stage_container.content = build_safe_stage_card(ch_num, ch_total, title, item)
+                if state["auto_launch_vlc_on_zap"]:
+                    launch_vlc_intent(url, title)
 
             mini_osd_num_badge.value = f"KANAŁ {ch_num} / {max(1, ch_total)}"
             mini_osd_title.value = f"▶  {title}"
@@ -2503,6 +2610,14 @@ def main(page: ft.Page):
                 toggle_player_engine()
                 _rebuild_labels()
 
+            def _act_native_vid():
+                toggle_native_video_ctrl()
+                _rebuild_labels()
+
+            def _act_auto_zap_vlc():
+                toggle_auto_vlc_on_zap()
+                _rebuild_labels()
+
             def _act_search():
                 close_settings_panel()
                 open_search_panel()
@@ -2521,22 +2636,36 @@ def main(page: ft.Page):
 
             cur_it = state.get("current_item")
             fav_lbl = "⭐ Usuń bieżącą pozycję z Ulubionych" if (cur_it and is_favorite(cur_it)) else "⭐ Dodaj bieżącą pozycję do Ulubionych"
-            eng_lbl = "🎬 Odtwarzacz: Zewnętrzny VLC" if state["external_vlc_only"] else "📺 Odtwarzacz: Wbudowany (Zapping ⬆️/⬇️, 0-9 i lista pod OK)"
+            eng_lbl = "🚀 Tryb kliknięcia OK: Tylko zewnętrzny VLC" if state["external_vlc_only"] else "📺 Tryb kliknięcia OK: Ekran Zappingu OSD (⬆️/⬇️, 0-9, lista OK)"
+            nat_lbl = (
+                "🎬 Silnik ekranu: Kontrolka ft.Video (WŁĄCZONA)"
+                if state["use_native_video_ctrl"]
+                else "🛡️ Silnik ekranu: Bezpieczny OSD (Brak błędu Unknown control: video)"
+            )
+            zap_vlc_lbl = (
+                "🚀 Auto-uruchamianie VLC przy zmianie kanału: TAK"
+                if state["auto_launch_vlc_on_zap"]
+                else "📺 Auto-uruchamianie VLC przy zmianie kanału: NIE (tylko podgląd OSD)"
+            )
 
-            b_s_fav = make_tv_button(fav_lbl, _act_fav, height=36)
-            b_s_pl = make_tv_button(f"🇵🇱 Filtr 'Tylko Polskie': {'WŁĄCZONY' if state['only_pl'] else 'WYŁĄCZONY'}", _act_only_pl, height=36)
-            b_s_eng = make_tv_button(eng_lbl, _act_engine, height=36)
-            b_s_vmode = make_tv_button(VLC_MODE_LABELS[state["vlc_mode"]], _act_vlc_mode, height=36)
-            b_s_search = make_tv_button("🔍 Otwórz wyszukiwarkę (Lupa)", _act_search, height=36)
-            b_s_refresh = make_tv_button("🔄 Odśwież listę i wyczyść bufor RAM", _act_refresh, height=36)
-            b_s_cloud = make_tv_button(f"🌐 Zmień Kod ID / Nazwę odbiornika ({device_id})", _act_cloud, height=36)
-            b_s_logout = make_tv_button("⇄ Zmień konto / Wyloguj do ekranu startowego", _act_logout, height=36)
-            b_s_exit = make_tv_button("🚪 ZAMKNIJ APLIKACJĘ (Wyjdź do Android TV)", force_exit_app, height=36)
-            b_s_close = make_tv_button("↩ Zamknij ustawienia (wróć do listy)", close_settings_panel, height=36)
+            b_s_fav = make_tv_button(fav_lbl, _act_fav, height=34)
+            b_s_pl = make_tv_button(f"🇵🇱 Filtr 'Tylko Polskie': {'WŁĄCZONY' if state['only_pl'] else 'WYŁĄCZONY'}", _act_only_pl, height=34)
+            b_s_nat = make_tv_button(nat_lbl, _act_native_vid, height=34)
+            b_s_zap = make_tv_button(zap_vlc_lbl, _act_auto_zap_vlc, height=34)
+            b_s_eng = make_tv_button(eng_lbl, _act_engine, height=34)
+            b_s_vmode = make_tv_button(VLC_MODE_LABELS[state["vlc_mode"]], _act_vlc_mode, height=34)
+            b_s_search = make_tv_button("🔍 Otwórz wyszukiwarkę (Lupa)", _act_search, height=34)
+            b_s_refresh = make_tv_button("🔄 Odśwież listę i wyczyść bufor RAM", _act_refresh, height=34)
+            b_s_cloud = make_tv_button(f"🌐 Zmień Kod ID / Nazwę odbiornika ({device_id})", _act_cloud, height=34)
+            b_s_logout = make_tv_button("⇄ Zmień konto / Wyloguj do ekranu startowego", _act_logout, height=34)
+            b_s_exit = make_tv_button("🚪 ZAMKNIJ APLIKACJĘ (Wyjdź do Android TV)", force_exit_app, height=34)
+            b_s_close = make_tv_button("↩ Zamknij ustawienia (wróć do listy)", close_settings_panel, height=34)
 
             settings_menu_buttons.extend([
                 b_s_fav,
                 b_s_pl,
+                b_s_nat,
+                b_s_zap,
                 b_s_eng,
                 b_s_vmode,
                 b_s_search,
@@ -2548,7 +2677,7 @@ def main(page: ft.Page):
             ])
 
             settings_panel_col.controls.append(
-                ft.Text("⚙️ MENU USTAWIEŃ (steruj strzałkami ⬆️ ⬇️ i OK, WSTECZ = zamknij)", size=14, weight=ft.FontWeight.BOLD, color="#e4e4e7")
+                ft.Text("⚙️ MENU USTAWIEŃ (steruj strzałkami ⬆️ ⬇️ i OK, WSTECZ = zamknij)", size=13, weight=ft.FontWeight.BOLD, color="#e4e4e7")
             )
             settings_panel_col.controls.extend(settings_menu_buttons)
 
@@ -2556,8 +2685,22 @@ def main(page: ft.Page):
                 set_tv_button_text(b_s_pl, f"🇵🇱 Filtr 'Tylko Polskie': {'WŁĄCZONY' if state['only_pl'] else 'WYŁĄCZONY'}")
                 set_tv_button_text(b_s_vmode, VLC_MODE_LABELS[state["vlc_mode"]])
                 set_tv_button_text(
+                    b_s_nat,
+                    "🎬 Silnik ekranu: Kontrolka ft.Video (WŁĄCZONA)"
+                    if state["use_native_video_ctrl"]
+                    else "🛡️ Silnik ekranu: Bezpieczny OSD (Brak błędu Unknown control: video)",
+                )
+                set_tv_button_text(
+                    b_s_zap,
+                    "🚀 Auto-uruchamianie VLC przy zmianie kanału: TAK"
+                    if state["auto_launch_vlc_on_zap"]
+                    else "📺 Auto-uruchamianie VLC przy zmianie kanału: NIE (tylko podgląd OSD)",
+                )
+                set_tv_button_text(
                     b_s_eng,
-                    "🎬 Odtwarzacz: Zewnętrzny VLC" if state["external_vlc_only"] else "📺 Odtwarzacz: Wbudowany (Zapping ⬆️/⬇️, 0-9 i lista pod OK)",
+                    "🚀 Tryb kliknięcia OK: Tylko zewnętrzny VLC"
+                    if state["external_vlc_only"]
+                    else "📺 Tryb kliknięcia OK: Ekran Zappingu OSD (⬆️/⬇️, 0-9, lista OK)",
                 )
                 style_settings_menu()
 
@@ -2638,7 +2781,7 @@ def main(page: ft.Page):
             content=ft.Column(
                 [
                     ft.Row(
-                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V8.4 DARK", size=22, weight=ft.FontWeight.BOLD, color="#e4e4e7")],
+                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V8.5 DARK", size=22, weight=ft.FontWeight.BOLD, color="#e4e4e7")],
                         alignment=ft.MainAxisAlignment.CENTER,
                         spacing=12,
                     ),
@@ -3408,9 +3551,6 @@ def main(page: ft.Page):
             key = e.key
             digit = extract_digit_from_key(key)
 
-            # =================================================================
-            # STEROWANIE PODCZAS OGLĄDANIA KANAŁU NA PEŁNYM EKRANIE (BEZ WYCHODZENIA)
-            # =================================================================
             if app_state["in_fullscreen_player"]:
                 if digit is not None:
                     handle_numeric_channel_digit(digit)
@@ -3431,10 +3571,8 @@ def main(page: ft.Page):
                         state["osd_idx"] = max(0, state["osd_idx"] - OSD_VISIBLE_ROWS)
                         render_osd_channel_list()
                     elif key == "Arrow Right":
-                        # Zmiana kategorii w prawo bez wychodzenia z oglądanego kanału
                         switch_osd_category_relative(1)
                     elif key == "Arrow Left":
-                        # Zmiana kategorii w lewo bez wychodzenia z oglądanego kanału
                         switch_osd_category_relative(-1)
                     elif key in ("Enter", "Select", " "):
                         trigger_current_ok_action()
@@ -3444,13 +3582,10 @@ def main(page: ft.Page):
                     if key in ("Enter", "Select", " ", "Arrow Left"):
                         open_osd_channel_overlay()
                     elif key in ("Arrow Up", "Channel Up", "Media Track Next", "Page Up"):
-                        # Szybkie przełączenie na następny kanał bez otwierania menu
                         switch_live_channel_relative(1)
                     elif key in ("Arrow Down", "Channel Down", "Media Track Previous", "Page Down"):
-                        # Szybkie przełączenie na poprzedni kanał bez otwierania menu
                         switch_live_channel_relative(-1)
                     elif key == "Arrow Right":
-                        # Szybki powrót do poprzednio oglądanego kanału (RECALL)
                         recall_previous_live_channel()
                     elif key in ("Backspace", "Escape", "Browser Back", "Go Back"):
                         handle_universal_back()
