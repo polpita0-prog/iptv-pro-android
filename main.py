@@ -534,26 +534,27 @@ def build_special_top_categories(kind: str, raw_cats: list) -> list:
     return top + raw_cats
 
 
+# Stonowane, ciemnografitowe logo (bez jaskrawych kolorów)
 def make_iptv_bp_badge(size_px=42):
     return ft.Container(
         content=ft.Row(
             [
-                ft.Text("▶", size=max(12, int(size_px * 0.42)), color="#38bdf8", weight=ft.FontWeight.BOLD),
+                ft.Text("▣", size=max(12, int(size_px * 0.40)), color="#a1a1aa"),
                 ft.Column(
                     [
                         ft.Text(
                             "IPTV",
                             size=max(9, int(size_px * 0.25)),
                             weight=ft.FontWeight.BOLD,
-                            color="#e0f2fe",
+                            color="#f4f4f5",
                             height=max(11, int(size_px * 0.29)),
                         ),
                         ft.Text(
                             "BP",
-                            size=max(11, int(size_px * 0.33)),
+                            size=max(11, int(size_px * 0.32)),
                             weight=ft.FontWeight.BOLD,
-                            color="#38bdf8",
-                            height=max(13, int(size_px * 0.37)),
+                            color="#a1a1aa",
+                            height=max(13, int(size_px * 0.36)),
                         ),
                     ],
                     alignment=ft.MainAxisAlignment.CENTER,
@@ -567,14 +568,9 @@ def make_iptv_bp_badge(size_px=42):
         ),
         width=size_px * 1.6,
         height=size_px,
-        bgcolor="#0f172a",
-        gradient=ft.LinearGradient(
-            begin=ft.alignment.top_left,
-            end=ft.alignment.bottom_right,
-            colors=["#1e3a8a", "#0f172a", "#4c1d95"],
-        ),
-        border_radius=12,
-        border=ft.border.all(2, "#38bdf8"),
+        bgcolor="#18181b",
+        border_radius=10,
+        border=ft.border.all(1.5, "#52525b"),
         alignment=ft.alignment.center,
     )
 
@@ -583,7 +579,7 @@ def main(page: ft.Page):
     try:
         page.title = "IPTV BP"
         page.theme_mode = ft.ThemeMode.DARK
-        page.bgcolor = "#0b1f15"
+        page.bgcolor = "#101216"
         page.padding = 0
 
         stop_event = threading.Event()
@@ -591,8 +587,11 @@ def main(page: ft.Page):
             "dialog_open": False,
             "settings_open": False,
             "search_open": False,
+            "in_fullscreen_player": False,
+            "osd_list_open": False,
             "paused_in_bg": False,
             "preview_seq": 0,
+            "osd_hide_seq": 0,
             "last_back_press_ts": 0.0,
             "last_ok_ts": 0.0,
         }
@@ -607,7 +606,7 @@ def main(page: ft.Page):
                 "device_name": "Android TV Box",
                 "profiles": [],
                 "processed_ids": [],
-                "auto_vlc": True,
+                "auto_vlc": False,  # Domyślnie używamy wbudowanego odtwarzacza z półprzezroczystą listą OK
                 "auto_login": True,
                 "only_pl": False,
                 "vlc_mode": "vlc_clean",
@@ -718,7 +717,7 @@ def main(page: ft.Page):
         device_name = cache_get("device_name", "Android TV Box")
         profiles = list(cache_get("profiles", []))
         processed_ids = set(cache_get("processed_ids", []))
-        auto_vlc_saved = cache_get("auto_vlc", True)
+        auto_vlc_saved = cache_get("auto_vlc", False)
         auto_login_saved = cache_get("auto_login", True)
         only_pl_saved = cache_get("only_pl", False)
         saved_vlc_mode = cache_get("vlc_mode", "vlc_clean")
@@ -824,6 +823,8 @@ def main(page: ft.Page):
             "episodes": [],
             "filtered": [],
             "all_built_items": [],
+            "osd_channels": [],
+            "osd_idx": 0,
             "search_query": "",
             "only_pl": bool(only_pl_saved),
             "now_playing": "Brak aktywnego strumienia",
@@ -833,7 +834,7 @@ def main(page: ft.Page):
             "paused": False,
             "volume": 100,
             "muted": False,
-            "auto_vlc": bool(auto_vlc_saved),
+            "external_vlc_only": bool(auto_vlc_saved),
             "auto_login": bool(auto_login_saved),
             "is_logging_in": False,
             "vlc_mode": saved_vlc_mode,
@@ -848,6 +849,7 @@ def main(page: ft.Page):
         }
 
         VISIBLE_ROWS = 8
+        OSD_VISIBLE_ROWS = 9
 
         def publish_status():
             if stop_event.is_set() or app_state["paused_in_bg"]:
@@ -921,7 +923,7 @@ def main(page: ft.Page):
                 text_str,
                 size=14,
                 weight=ft.FontWeight.BOLD,
-                color="white",
+                color="#e4e4e7",
                 no_wrap=True,
                 expand=True,
             )
@@ -931,8 +933,8 @@ def main(page: ft.Page):
                 height=height,
                 padding=ft.padding.symmetric(horizontal=12, vertical=4),
                 border_radius=8,
-                bgcolor="#163828",
-                border=ft.border.all(1, "#22543d"),
+                bgcolor="#1c1f26",
+                border=ft.border.all(1, "#2e323d"),
                 alignment=ft.alignment.center_left,
                 expand=expand,
                 on_click=lambda _: on_click_fn(),
@@ -949,14 +951,14 @@ def main(page: ft.Page):
             box.data["base_text"] = new_text
             box.data["text_ctrl"].value = new_text
 
-        clock_txt = ft.Text("00:00", size=28, weight=ft.FontWeight.BOLD, color="white")
-        date_txt = ft.Text("Sunday, 18 Oct 2026", size=12, color="#86efac")
-        footer_playlist_txt = ft.Text("Current Playlist: Brak", size=12, color="#86efac")
-        footer_expire_txt = ft.Text(f"Expire: Unlimited  •  ID: {device_id}", size=12, color="#86efac")
+        clock_txt = ft.Text("00:00", size=28, weight=ft.FontWeight.BOLD, color="#f4f4f5")
+        date_txt = ft.Text("Sunday, 18 Oct 2026", size=12, color="#a1a1aa")
+        footer_playlist_txt = ft.Text("Current Playlist: Brak", size=12, color="#a1a1aa")
+        footer_expire_txt = ft.Text(f"Expire: Unlimited  •  ID: {device_id}", size=12, color="#a1a1aa")
         dash_back_hint_txt = ft.Text(
             "Pilot: Strzałki = wybór | OK = zatwierdź | 2x WSTECZ lub 🚪 ZAMKNIJ = wyjdź",
             size=12,
-            color="#38bdf8",
+            color="#d4d4d8",
             weight=ft.FontWeight.BOLD,
         )
 
@@ -991,24 +993,24 @@ def main(page: ft.Page):
             "PODGLĄD POZYCJI",
             size=11,
             weight=ft.FontWeight.BOLD,
-            color="#38bdf8",
+            color="#a1a1aa",
         )
         status_info_title = ft.Text(
             "Najedź kursorem na kanał, film lub serial",
             size=19,
             weight=ft.FontWeight.BOLD,
-            color="#34d399",
+            color="#f4f4f5",
         )
         status_info_meta = ft.Text(
             "",
             size=13,
             weight=ft.FontWeight.BOLD,
-            color="#38bdf8",
+            color="#a1a1aa",
         )
         status_info_sub = ft.Text(
-            "Wystarczy podświetlić dowolną pozycję na liście po lewej stronie, aby w tym oknie natychmiast wyświetliły się informacje o programie TV (EPG), ocena TMDB, rok wydania oraz pełny opis fabuły.",
+            "Najedź na pozycję po lewej stronie, aby wyświetlić opis i program TV (EPG).\nPodczas oglądania kanału naciśnij przycisk OK na pilocie, aby otworzyć półprzezroczystą listę kanałów bez wychodzenia z programu.",
             size=14,
-            color="#e2e8f0",
+            color="#d4d4d8",
             max_lines=9,
             overflow=ft.TextOverflow.ELLIPSIS,
         )
@@ -1020,13 +1022,13 @@ def main(page: ft.Page):
                     [
                         ft.Container(
                             content=info_badge_txt,
-                            bgcolor="#163828",
+                            bgcolor="#27272a",
                             padding=ft.padding.symmetric(horizontal=8, vertical=3),
                             border_radius=6,
                         ),
                         status_info_title,
                         status_info_meta,
-                        ft.Divider(height=8, color="#22543d"),
+                        ft.Divider(height=8, color="#2e323d"),
                         status_info_sub,
                     ],
                     alignment=ft.MainAxisAlignment.START,
@@ -1044,9 +1046,9 @@ def main(page: ft.Page):
         settings_overlay_box = ft.Container(
             content=settings_panel_col,
             expand=True,
-            bgcolor="#091811",
+            bgcolor="#14161b",
             border_radius=12,
-            border=ft.border.all(2, "#38bdf8"),
+            border=ft.border.all(2, "#52525b"),
             padding=14,
             visible=False,
         )
@@ -1055,9 +1057,9 @@ def main(page: ft.Page):
         search_overlay_box = ft.Container(
             content=search_panel_col,
             expand=True,
-            bgcolor="#091811",
+            bgcolor="#14161b",
             border_radius=12,
-            border=ft.border.all(2, "#38bdf8"),
+            border=ft.border.all(2, "#52525b"),
             padding=14,
             visible=False,
         )
@@ -1065,23 +1067,248 @@ def main(page: ft.Page):
         video_placeholder = ft.Container(
             content=info_box_content,
             expand=True,
-            bgcolor="#091811",
+            bgcolor="#14161b",
             border_radius=12,
-            border=ft.border.all(2, "#22543d"),
+            border=ft.border.all(1, "#2e323d"),
             padding=16,
             visible=True,
         )
 
         now_playing_txt = ft.Text(
-            "▶ Pilot: OK = Odtwarzaj kanał | ⏮ KANAŁ - / ⏭ KANAŁ + = Zmień kanał bez wychodzenia!",
+            "▶ Pilot: OK = Oglądaj (podczas oglądania OK = półprzezroczysta lista kanałów)",
             weight=ft.FontWeight.BOLD,
             size=13,
-            color="#38bdf8",
+            color="#a1a1aa",
         )
-        header_dev_lbl = ft.Text(f"📺 {device_name} [{device_id}]", size=12, color="#34d399", weight=ft.FontWeight.BOLD)
-        list_header_lbl = ft.Text("📂 LISTA KATEGORII", size=13, weight=ft.FontWeight.BOLD, color="#34d399")
+        header_dev_lbl = ft.Text(f"📺 {device_name} [{device_id}]", size=12, color="#a1a1aa", weight=ft.FontWeight.BOLD)
+        list_header_lbl = ft.Text("📂 LISTA KATEGORII", size=13, weight=ft.FontWeight.BOLD, color="#e4e4e7")
         list_column = ft.Column(spacing=5, expand=True)
-        status_banner = ft.Text(f"🟢 Zdalny Cloud aktywny — Kod ID: {device_id}", color="#34d399", size=13)
+        status_banner = ft.Text(f"🟢 Zdalny Cloud aktywny — Kod ID: {device_id}", color="#a1a1aa", size=13)
+
+        # =====================================================================
+        # PEŁNOEKRANOWY ODTWARZACZ Z PÓŁPRZEZROCZYSTĄ LISTĄ KANAŁÓW (PO KLIKNIĘCIU OK)
+        # =====================================================================
+        video_stage_container = ft.Container(
+            expand=True,
+            bgcolor="#000000",
+            alignment=ft.alignment.center,
+        )
+
+        mini_osd_title = ft.Text("", size=18, weight=ft.FontWeight.BOLD, color="#ffffff")
+        mini_osd_epg = ft.Text("Naciśnij OK na pilocie = Półprzezroczysta lista kanałów  |  ➡️ = Otwórz w VLC  |  WSTECZ = Wyjdź", size=13, color="#d4d4d8")
+        mini_osd_bar = ft.Container(
+            content=ft.Column([mini_osd_title, mini_osd_epg], spacing=4, tight=True),
+            bgcolor="#BF111318",
+            padding=ft.padding.symmetric(horizontal=22, vertical=14),
+            border_radius=12,
+            border=ft.border.all(1, "#52525b"),
+            bottom=24,
+            left=24,
+            right=24,
+            visible=True,
+        )
+
+        osd_list_column = ft.Column(spacing=5, expand=True)
+        osd_right_title = ft.Text("", size=20, weight=ft.FontWeight.BOLD, color="#ffffff")
+        osd_right_epg = ft.Text("", size=14, color="#e4e4e7", max_lines=6, overflow=ft.TextOverflow.ELLIPSIS)
+
+        # Półprzezroczysta nakładka kanałów otwierana przyciskiem OK podczas oglądania (#B8 = ~72% przezroczystości)
+        channel_osd_overlay = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Container(
+                        width=470,
+                        bgcolor="#CC12141A",
+                        padding=14,
+                        border_radius=12,
+                        border=ft.border.all(1.5, "#71717a"),
+                        content=ft.Column(
+                            [
+                                ft.Text(
+                                    "📺 PRZEŁĄCZ KANAŁ (OK = Zmień | WSTECZ = Ukryj)",
+                                    size=13,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#e4e4e7",
+                                ),
+                                ft.Divider(height=6, color="#3f3f46"),
+                                osd_list_column,
+                            ],
+                            expand=True,
+                            spacing=6,
+                        ),
+                    ),
+                    ft.Container(
+                        expand=True,
+                        padding=16,
+                        alignment=ft.alignment.bottom_left,
+                        content=ft.Container(
+                            bgcolor="#BF12141A",
+                            padding=16,
+                            border_radius=12,
+                            border=ft.border.all(1, "#52525b"),
+                            content=ft.Column(
+                                [
+                                    osd_right_title,
+                                    osd_right_epg,
+                                    ft.Divider(height=8, color="#3f3f46"),
+                                    ft.Text(
+                                        "⬆️ ⬇️ Wybierz kanał   |   OK = Przełącz natychmiast   |   ➡️ Wymuś VLC   |   WSTECZ = Zamknij listę",
+                                        size=12,
+                                        color="#a1a1aa",
+                                        weight=ft.FontWeight.BOLD,
+                                    ),
+                                ],
+                                tight=True,
+                                spacing=6,
+                            ),
+                        ),
+                    ),
+                ],
+                expand=True,
+                spacing=16,
+            ),
+            expand=True,
+            bgcolor="#55000000",
+            padding=20,
+            visible=False,
+        )
+
+        fullscreen_player_view = ft.Container(
+            content=ft.Stack(
+                [
+                    video_stage_container,
+                    mini_osd_bar,
+                    channel_osd_overlay,
+                ],
+                expand=True,
+            ),
+            expand=True,
+            visible=False,
+            bgcolor="#000000",
+        )
+
+        def schedule_mini_osd_autohide():
+            app_state["osd_hide_seq"] += 1
+            cur_s = app_state["osd_hide_seq"]
+
+            def _hider():
+                time.sleep(4.5)
+                if cur_s != app_state["osd_hide_seq"] or stop_event.is_set():
+                    return
+                if app_state["in_fullscreen_player"] and not app_state["osd_list_open"]:
+                    mini_osd_bar.visible = False
+                    safe_ui_update()
+
+            threading.Thread(target=_hider, daemon=True).start()
+
+        def update_osd_channel_epg_async(item):
+            if not isinstance(item, dict):
+                return
+            nm = item.get("name") or item.get("title") or "Kanał"
+            osd_right_title.value = f"📺 {nm}"
+            osd_right_epg.value = "⏳ Pobieranie programu TV (EPG)..."
+            safe_ui_update()
+
+            k = item.get("kind") or state["kind"]
+            if k == "live" and state.get("client"):
+                def _epg_w():
+                    epg_list = state["client"].get_short_epg(item.get("stream_id"))
+                    if epg_list:
+                        osd_right_epg.value = "\n\n".join(epg_list[:2])
+                    else:
+                        osd_right_epg.value = "Brak danych EPG dla tego kanału. Naciśnij OK, aby przełączyć."
+                    safe_ui_update()
+
+                threading.Thread(target=_epg_w, daemon=True).start()
+            else:
+                osd_right_epg.value = "Naciśnij OK, aby uruchomić tę pozycję."
+                safe_ui_update()
+
+        def render_osd_channel_list():
+            channels = state.get("osd_channels", [])
+            total = len(channels)
+            osd_list_column.controls.clear()
+            if total == 0:
+                osd_list_column.controls.append(ft.Text("Brak kanałów na liście.", color="#a1a1aa"))
+                safe_ui_update()
+                return
+
+            state["osd_idx"] = max(0, min(state["osd_idx"], total - 1))
+            cur_idx = state["osd_idx"]
+            playing_uid = get_item_unique_id(state.get("current_item"))
+
+            half = OSD_VISIBLE_ROWS // 2
+            start_v = max(0, min(cur_idx - half, max(0, total - OSD_VISIBLE_ROWS)))
+            end_v = min(total, start_v + OSD_VISIBLE_ROWS)
+
+            for idx in range(start_v, end_v):
+                ch = channels[idx]
+                is_foc = (idx == cur_idx)
+                is_now = (get_item_unique_id(ch) == playing_uid)
+                nm = ch.get("name") or ch.get("title") or "Kanał"
+                prefix = "▶ " if is_foc else ("🟢 " if is_now else "   ")
+                lbl = f"{idx + 1}. {prefix}{nm}"
+
+                row_box = ft.Container(
+                    content=ft.Text(
+                        lbl,
+                        size=15 if is_foc else 14,
+                        weight=ft.FontWeight.BOLD,
+                        color="#ffffff" if is_foc else ("#a1a1aa" if not is_now else "#f4f4f5"),
+                        no_wrap=True,
+                    ),
+                    height=42,
+                    padding=ft.padding.symmetric(horizontal=12, vertical=4),
+                    border_radius=8,
+                    bgcolor="#D93F3F46" if is_foc else ("#9927272A" if is_now else "#8018181B"),
+                    border=ft.border.all(2 if is_foc else 1, "#f4f4f5" if is_foc else "#3f3f46"),
+                    alignment=ft.alignment.center_left,
+                    on_click=lambda _e, it=ch: select_channel_from_osd(it),
+                )
+                osd_list_column.controls.append(row_box)
+
+            update_osd_channel_epg_async(channels[cur_idx])
+            safe_ui_update()
+
+        def open_osd_channel_overlay():
+            channels = state.get("filtered") or state.get("streams") or favorites_items or []
+            state["osd_channels"] = channels
+            cur_uid = get_item_unique_id(state.get("current_item"))
+            found_i = 0
+            for idx, it in enumerate(channels):
+                if get_item_unique_id(it) == cur_uid:
+                    found_i = idx
+                    break
+            state["osd_idx"] = found_i
+            app_state["osd_list_open"] = True
+            mini_osd_bar.visible = False
+            channel_osd_overlay.visible = True
+            render_osd_channel_list()
+
+        def close_osd_channel_overlay():
+            app_state["osd_list_open"] = False
+            channel_osd_overlay.visible = False
+            mini_osd_bar.visible = True
+            safe_ui_update()
+            schedule_mini_osd_autohide()
+
+        def select_channel_from_osd(item):
+            cur_uid = get_item_unique_id(state.get("current_item"))
+            new_uid = get_item_unique_id(item)
+            close_osd_channel_overlay()
+            if new_uid != cur_uid or not state["is_playing"]:
+                on_stream_click(item)
+
+        def exit_fullscreen_player():
+            app_state["in_fullscreen_player"] = False
+            app_state["osd_list_open"] = False
+            channel_osd_overlay.visible = False
+            fullscreen_player_view.visible = False
+            video_stage_container.content = None
+            dash_inner_view.visible = True
+            state["zone"] = "list"
+            update_focus_styles()
+            publish_status()
 
         def is_favorite(item):
             uid = get_item_unique_id(item)
@@ -1101,7 +1328,7 @@ def main(page: ft.Page):
                 status_info_meta.value = f"Sekcja: {state['kind'].upper()}  •  Naciśnij OK, aby otworzyć"
                 status_info_sub.value = (
                     "Przewijaj listę strzałkami ⬆️ ⬇️ na całej wysokości okna.\n"
-                    "W VLC użyj przycisków ⏮ Następny / Poprzedni ⏭ na ekranie lub pilocie, aby przełączać kanały bez wychodzenia do menu!"
+                    "Po włączeniu kanału naciśnij przycisk OK na pilocie, aby wyświetlić półprzezroczystą listę kanałów na ekranie wideo."
                 )
                 return
 
@@ -1189,10 +1416,14 @@ def main(page: ft.Page):
             now_playing_txt.value = f"🔧 {VLC_MODE_LABELS[new_mode]}"
             safe_ui_update()
 
-        def toggle_auto_vlc(_e=None):
-            state["auto_vlc"] = not state["auto_vlc"]
-            cache_set("auto_vlc", state["auto_vlc"])
-            now_playing_txt.value = f"🚀 Auto-start VLC po kliknięciu OK: {'WŁ.' if state['auto_vlc'] else 'WYŁ.'}"
+        def toggle_player_engine(_e=None):
+            state["external_vlc_only"] = not state["external_vlc_only"]
+            cache_set("auto_vlc", state["external_vlc_only"])
+            now_playing_txt.value = (
+                "🚀 Wybrano: Zewnętrzny odtwarzacz VLC"
+                if state["external_vlc_only"]
+                else "📺 Wybrano: Wbudowany odtwarzacz z półprzezroczystą listą kanałów (OK)"
+            )
             safe_ui_update()
 
         def toggle_favorite(_e=None):
@@ -1221,6 +1452,8 @@ def main(page: ft.Page):
             state["is_playing"] = False
             state["paused"] = False
             state["now_playing"] = "Brak aktywnego strumienia"
+            if app_state["in_fullscreen_player"]:
+                exit_fullscreen_player()
             now_playing_txt.value = "⏹ Zatrzymano odtwarzanie"
             safe_ui_update()
             publish_status()
@@ -1259,15 +1492,50 @@ def main(page: ft.Page):
             state["is_playing"] = True
             state["paused"] = False
             now_playing_txt.value = f"▶ Odtwarzanie: {title}"
-            if state["auto_vlc"]:
+
+            if state["external_vlc_only"]:
                 launch_vlc_intent(url, title)
-            else:
-                safe_ui_update()
+                publish_status()
+                return
+
+            # Uruchomienie we wbudowanym odtwarzaczu z półprzezroczystą listą kanałów pod przyciskiem OK
+            try:
+                vid_ctrl = ft.Video(
+                    playlist=[ft.VideoMedia(url)],
+                    autoplay=True,
+                    show_controls=False,
+                    expand=True,
+                    fill_color="#000000",
+                )
+                video_stage_container.content = vid_ctrl
+            except Exception:
+                video_stage_container.content = ft.Column(
+                    [
+                        ft.Text(f"▶ {title}", size=24, weight=ft.FontWeight.BOLD, color="white"),
+                        ft.Text(
+                            "Naciśnij OK = Półprzezroczysta lista kanałów  |  Naciśnij ➡️ = Otwórz w VLC",
+                            size=15,
+                            color="#a1a1aa",
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                )
+
+            mini_osd_title.value = f"▶  {title}"
+            mini_osd_epg.value = "Naciśnij OK na pilocie = Półprzezroczysta lista kanałów  |  ➡️ = VLC  |  WSTECZ = Wyjdź"
+            mini_osd_bar.visible = True
+            channel_osd_overlay.visible = False
+            app_state["osd_list_open"] = False
+            app_state["in_fullscreen_player"] = True
+
+            dash_view.visible = False
+            dash_inner_view.visible = False
+            fullscreen_player_view.visible = True
+            safe_ui_update()
+            schedule_mini_osd_autohide()
             publish_status()
 
-        # =====================================================================
-        # ZMIANA KANAŁU BEZ WYCHODZENIA Z OGLĄDANIA (KANAŁ + / KANAŁ -)
-        # =====================================================================
         def switch_live_channel_relative(step: int):
             streams_list = state.get("filtered") or state.get("streams") or []
             if not streams_list or not state.get("client"):
@@ -1287,57 +1555,14 @@ def main(page: ft.Page):
                     state["list_idx"] = b_idx
                     break
 
-            render_viewport()
             on_stream_click(next_item)
-
-        # Wgrywanie całej bieżącej kategorii jako playlisty M3U do VLC (przełączanie Next/Prev bezpośrednio w VLC bez wychodzenia!)
-        def launch_category_playlist_in_vlc(_e=None):
-            streams_list = state.get("filtered") or state.get("streams") or []
-            if not streams_list or not state.get("client"):
-                if state.get("playing_url"):
-                    launch_vlc_intent(state["playing_url"], state["now_playing"])
-                return
-
-            cur_item = state.get("current_item")
-            cur_uid = get_item_unique_id(cur_item) if cur_item else ""
-            start_idx = 0
-            for idx, it in enumerate(streams_list):
-                if get_item_unique_id(it) == cur_uid:
-                    start_idx = idx
-                    break
-
-            ordered = streams_list[start_idx:] + streams_list[:start_idx]
-            ordered = ordered[:120]
-
-            m3u_lines = ["#EXTM3U"]
-            for it in ordered:
-                k = it.get("kind") or state["kind"]
-                if k == "series":
-                    continue
-                nm = (it.get("name") or it.get("title") or "Kanał").replace("\n", " ")
-                ext = it.get("container_extension", "ts" if k == "live" else "mp4") or ("ts" if k == "live" else "mp4")
-                u = state["client"].build_stream_url(k, it.get("stream_id"), ext, item=it)
-                if u:
-                    m3u_lines.append(f"#EXTINF:-1,{nm}")
-                    m3u_lines.append(u)
-
-            if len(m3u_lines) <= 2 and state.get("playing_url"):
-                launch_vlc_intent(state["playing_url"], state["now_playing"])
-                return
-
-            m3u_content = "\n".join(m3u_lines)
-            b64_m3u = base64.b64encode(m3u_content.encode("utf-8")).decode("ascii")
-            data_uri = f"data:audio/x-mpegurl;base64,{b64_m3u}"
-            now_playing_txt.value = "🚀 Wysłano listę kanałów do VLC — zmieniaj kanały przyciskami ⏮ / ⏭ w VLC bez wychodzenia!"
-            safe_ui_update()
-            threading.Thread(target=lambda: page.launch_url(data_uri), daemon=True).start()
 
         search_menu_buttons = []
         search_tf_input = ft.TextField(
             label="Wpisz szukaną nazwę (np. TVN, HBO, Batman)...",
             value="",
-            bgcolor="#163828",
-            border_color="#38bdf8",
+            bgcolor="#1c1f26",
+            border_color="#71717a",
             color="white",
             text_size=15,
         )
@@ -1426,7 +1651,7 @@ def main(page: ft.Page):
             search_menu_buttons.extend([b_kbd, b_cur, b_live, b_vod, b_ser, b_clr, b_cls])
 
             search_panel_col.controls.append(
-                ft.Text("🔍 WYSZUKIWARKA IPTV BP (użyj strzałek ⬆️ ⬇️ oraz OK)", size=15, weight=ft.FontWeight.BOLD, color="#38bdf8")
+                ft.Text("🔍 WYSZUKIWARKA IPTV BP (użyj strzałek ⬆️ ⬇️ oraz OK)", size=15, weight=ft.FontWeight.BOLD, color="#e4e4e7")
             )
             search_panel_col.controls.append(search_tf_input)
             search_panel_col.controls.extend(search_menu_buttons)
@@ -1435,8 +1660,8 @@ def main(page: ft.Page):
                 for i, b in enumerate(search_menu_buttons):
                     foc = (i == state["search_idx"])
                     base_t = b.data["base_text"]
-                    b.bgcolor = "#0284c7" if foc else "#163828"
-                    b.border = ft.border.all(3 if foc else 1, "#38bdf8" if foc else "#22543d")
+                    b.bgcolor = "#3f3f46" if foc else "#1c1f26"
+                    b.border = ft.border.all(2.5 if foc else 1, "#f4f4f5" if foc else "#2e323d")
                     b.data["text_ctrl"].color = "white"
                     b.data["text_ctrl"].value = f"▶  {base_t}" if foc else base_t
                 safe_ui_update()
@@ -1452,8 +1677,8 @@ def main(page: ft.Page):
                 content=txt_c,
                 padding=ft.padding.symmetric(horizontal=12, vertical=7),
                 border_radius=20,
-                bgcolor="#7f1d1d" if is_danger else "#163828",
-                border=ft.border.all(1, "#ef4444" if is_danger else "#34d399"),
+                bgcolor="#451a1a" if is_danger else "#1c1f26",
+                border=ft.border.all(1, "#7f1d1d" if is_danger else "#3f3f46"),
                 on_click=lambda _: on_click_fn(),
             )
             box.data = {"text_ctrl": txt_c, "action": on_click_fn, "danger": is_danger}
@@ -1464,13 +1689,13 @@ def main(page: ft.Page):
                 title,
                 size=16 if is_large else 13,
                 weight=ft.FontWeight.BOLD,
-                color="white",
+                color="#f4f4f5",
                 text_align=ft.TextAlign.CENTER,
             )
             i_ctrl = ft.Text(
                 icon_char,
                 size=34 if is_large else 19,
-                color="#fca5a5" if is_danger else ("#38bdf8" if title in ("Live TV", "Szukaj", "Ustawienia") else "#34d399"),
+                color="#d4d4d8",
                 text_align=ft.TextAlign.CENTER,
             )
             content_layout = (
@@ -1490,9 +1715,9 @@ def main(page: ft.Page):
             )
             box = ft.Container(
                 content=content_layout,
-                bgcolor="#7f1d1d" if is_danger else "#112e22",
+                bgcolor="#3b1818" if is_danger else "#181a20",
                 border_radius=12,
-                border=ft.border.all(2 if is_danger else 1, "#ef4444" if is_danger else "#22543d"),
+                border=ft.border.all(1.5 if is_danger else 1, "#7f1d1d" if is_danger else "#2e323d"),
                 padding=8,
                 expand=True,
                 on_click=lambda _: on_click_fn(),
@@ -1503,8 +1728,11 @@ def main(page: ft.Page):
         def open_dashboard():
             app_state["settings_open"] = False
             app_state["search_open"] = False
+            app_state["in_fullscreen_player"] = False
+            app_state["osd_list_open"] = False
             settings_overlay_box.visible = False
             search_overlay_box.visible = False
+            fullscreen_player_view.visible = False
             video_placeholder.visible = True
             state["in_dashboard"] = True
             state["view_mode"] = "dashboard"
@@ -1519,8 +1747,10 @@ def main(page: ft.Page):
         def open_section(kind):
             app_state["settings_open"] = False
             app_state["search_open"] = False
+            app_state["in_fullscreen_player"] = False
             settings_overlay_box.visible = False
             search_overlay_box.visible = False
+            fullscreen_player_view.visible = False
             video_placeholder.visible = True
             state["in_dashboard"] = False
             state["kind"] = kind
@@ -1537,8 +1767,10 @@ def main(page: ft.Page):
         def open_catchup_section():
             app_state["settings_open"] = False
             app_state["search_open"] = False
+            app_state["in_fullscreen_player"] = False
             settings_overlay_box.visible = False
             search_overlay_box.visible = False
+            fullscreen_player_view.visible = False
             video_placeholder.visible = True
             state["in_dashboard"] = False
             state["kind"] = "live"
@@ -1558,8 +1790,10 @@ def main(page: ft.Page):
         def open_favorites_section():
             app_state["settings_open"] = False
             app_state["search_open"] = False
+            app_state["in_fullscreen_player"] = False
             settings_overlay_box.visible = False
             search_overlay_box.visible = False
+            fullscreen_player_view.visible = False
             video_placeholder.visible = True
             state["in_dashboard"] = False
             state["in_fav"] = True
@@ -1576,8 +1810,10 @@ def main(page: ft.Page):
         def open_profiles_section():
             app_state["settings_open"] = False
             app_state["search_open"] = False
+            app_state["in_fullscreen_player"] = False
             settings_overlay_box.visible = False
             search_overlay_box.visible = False
+            fullscreen_player_view.visible = False
             video_placeholder.visible = True
             state["in_dashboard"] = False
             state["in_fav"] = False
@@ -1691,7 +1927,7 @@ def main(page: ft.Page):
                         "Anuluj",
                         on_click=lambda _: (setattr(dlg, "open", False), app_state.update({"dialog_open": False}), safe_ui_update()),
                     ),
-                    ft.ElevatedButton("💾 Zapisz", on_click=_save, bgcolor="#0284c7", color="white"),
+                    ft.ElevatedButton("💾 Zapisz", on_click=_save, bgcolor="#3f3f46", color="white"),
                 ],
                 on_dismiss=lambda _: app_state.update({"dialog_open": False}),
             )
@@ -1724,7 +1960,7 @@ def main(page: ft.Page):
                 return
             state["is_logging_in"] = True
             status_banner.value = "⏳ Łączenie z serwerem IPTV BP..."
-            status_banner.color = "#38bdf8"
+            status_banner.color = "#d4d4d8"
             safe_ui_update()
 
             def _w():
@@ -1780,8 +2016,10 @@ def main(page: ft.Page):
             stop_playback()
             app_state["settings_open"] = False
             app_state["search_open"] = False
+            app_state["in_fullscreen_player"] = False
             settings_overlay_box.visible = False
             search_overlay_box.visible = False
+            fullscreen_player_view.visible = False
             video_placeholder.visible = True
             state["client"] = None
             state["streams_cache"].clear()
@@ -1851,7 +2089,7 @@ def main(page: ft.Page):
                         ft.ElevatedButton(
                             f"{prefix}{idx + 1}. [{p_mode}] {p_name} ({p_host})",
                             on_click=lambda _e, pr=p: _select_p(pr),
-                            bgcolor="#0284c7" if is_act else "#163828",
+                            bgcolor="#3f3f46" if is_act else "#1c1f26",
                             color="white",
                             expand=True,
                         ),
@@ -1900,7 +2138,7 @@ def main(page: ft.Page):
             dlg = ft.AlertDialog(
                 title=ft.Text(title_str),
                 content=ft.Column([tf_in], tight=True),
-                actions=[ft.ElevatedButton("Zapisz", on_click=_save, bgcolor="#0284c7", color="white")],
+                actions=[ft.ElevatedButton("Zapisz", on_click=_save, bgcolor="#3f3f46", color="white")],
                 on_dismiss=lambda _: app_state.update({"dialog_open": False}),
             )
             page.overlay.append(dlg)
@@ -1936,8 +2174,8 @@ def main(page: ft.Page):
                 cycle_vlc_mode()
                 _rebuild_labels()
 
-            def _act_auto_vlc():
-                toggle_auto_vlc()
+            def _act_engine():
+                toggle_player_engine()
                 _rebuild_labels()
 
             def _act_search():
@@ -1958,11 +2196,12 @@ def main(page: ft.Page):
 
             cur_it = state.get("current_item")
             fav_lbl = "⭐ Usuń bieżącą pozycję z Ulubionych" if (cur_it and is_favorite(cur_it)) else "⭐ Dodaj bieżącą pozycję do Ulubionych"
+            eng_lbl = "🎬 Odtwarzacz: Zewnętrzny VLC" if state["external_vlc_only"] else "📺 Odtwarzacz: Wbudowany (Półprzezroczysta lista pod OK)"
 
             b_s_fav = make_tv_button(fav_lbl, _act_fav, height=36)
             b_s_pl = make_tv_button(f"🇵🇱 Filtr 'Tylko Polskie': {'WŁĄCZONY' if state['only_pl'] else 'WYŁĄCZONY'}", _act_only_pl, height=36)
+            b_s_eng = make_tv_button(eng_lbl, _act_engine, height=36)
             b_s_vmode = make_tv_button(VLC_MODE_LABELS[state["vlc_mode"]], _act_vlc_mode, height=36)
-            b_s_autovlc = make_tv_button(f"🚀 Auto-start VLC po kliknięciu OK: {'WŁ.' if state['auto_vlc'] else 'WYŁ.'}", _act_auto_vlc, height=36)
             b_s_search = make_tv_button("🔍 Otwórz wyszukiwarkę (Lupa)", _act_search, height=36)
             b_s_refresh = make_tv_button("🔄 Odśwież listę i wyczyść bufor RAM", _act_refresh, height=36)
             b_s_cloud = make_tv_button(f"🌐 Zmień Kod ID / Nazwę odbiornika ({device_id})", _act_cloud, height=36)
@@ -1973,8 +2212,8 @@ def main(page: ft.Page):
             settings_menu_buttons.extend([
                 b_s_fav,
                 b_s_pl,
+                b_s_eng,
                 b_s_vmode,
-                b_s_autovlc,
                 b_s_search,
                 b_s_refresh,
                 b_s_cloud,
@@ -1984,22 +2223,25 @@ def main(page: ft.Page):
             ])
 
             settings_panel_col.controls.append(
-                ft.Text("⚙️ MENU USTAWIEŃ (steruj strzałkami ⬆️ ⬇️ i OK, WSTECZ = zamknij)", size=14, weight=ft.FontWeight.BOLD, color="#38bdf8")
+                ft.Text("⚙️ MENU USTAWIEŃ (steruj strzałkami ⬆️ ⬇️ i OK, WSTECZ = zamknij)", size=14, weight=ft.FontWeight.BOLD, color="#e4e4e7")
             )
             settings_panel_col.controls.extend(settings_menu_buttons)
 
             def _rebuild_labels():
                 set_tv_button_text(b_s_pl, f"🇵🇱 Filtr 'Tylko Polskie': {'WŁĄCZONY' if state['only_pl'] else 'WYŁĄCZONY'}")
                 set_tv_button_text(b_s_vmode, VLC_MODE_LABELS[state["vlc_mode"]])
-                set_tv_button_text(b_s_autovlc, f"🚀 Auto-start VLC po kliknięciu OK: {'WŁ.' if state['auto_vlc'] else 'WYŁ.'}")
+                set_tv_button_text(
+                    b_s_eng,
+                    "🎬 Odtwarzacz: Zewnętrzny VLC" if state["external_vlc_only"] else "📺 Odtwarzacz: Wbudowany (Półprzezroczysta lista pod OK)",
+                )
                 style_settings_menu()
 
             def style_settings_menu():
                 for i, b in enumerate(settings_menu_buttons):
                     foc = (i == state["settings_idx"])
                     base_t = b.data["base_text"]
-                    b.bgcolor = "#0284c7" if foc else ("#7f1d1d" if b == b_s_exit else "#163828")
-                    b.border = ft.border.all(3 if foc else 1, "#38bdf8" if foc else "#22543d")
+                    b.bgcolor = "#3f3f46" if foc else ("#451a1a" if b == b_s_exit else "#1c1f26")
+                    b.border = ft.border.all(2.5 if foc else 1, "#f4f4f5" if foc else "#2e323d")
                     b.data["text_ctrl"].color = "white"
                     b.data["text_ctrl"].value = f"▶  {base_t}" if foc else base_t
                 safe_ui_update()
@@ -2019,18 +2261,18 @@ def main(page: ft.Page):
             for idx, b_top in enumerate(dash_top_buttons):
                 foc_top = (state["zone"] == "dash_top" and state["dash_top_idx"] == idx)
                 is_d = b_top.data.get("danger", False)
-                b_top.bgcolor = "#0284c7" if foc_top else ("#7f1d1d" if is_d else "#163828")
-                b_top.border = ft.border.all(3 if foc_top else 1, "#38bdf8" if foc_top else ("#ef4444" if is_d else "#34d399"))
+                b_top.bgcolor = "#3f3f46" if foc_top else ("#451a1a" if is_d else "#1c1f26")
+                b_top.border = ft.border.all(2.5 if foc_top else 1, "#f4f4f5" if foc_top else ("#7f1d1d" if is_d else "#3f3f46"))
 
             for idx, tile in enumerate(dash_tiles):
                 is_foc = (state["zone"] == "dashboard" and state["dash_idx"] == idx)
                 is_d = tile.data.get("danger", False)
                 if is_foc:
-                    tile.bgcolor = "#dc2626" if is_d else "#0284c7"
-                    tile.border = ft.border.all(3, "#38bdf8")
+                    tile.bgcolor = "#7f1d1d" if is_d else "#2e323d"
+                    tile.border = ft.border.all(3, "#f4f4f5")
                 else:
-                    tile.bgcolor = "#7f1d1d" if is_d else "#112e22"
-                    tile.border = ft.border.all(2 if is_d else 1, "#ef4444" if is_d else "#22543d")
+                    tile.bgcolor = "#3b1818" if is_d else "#181a20"
+                    tile.border = ft.border.all(1.5 if is_d else 1, "#7f1d1d" if is_d else "#2e323d")
             safe_ui_update()
 
         btn_left_top_search = make_tv_button(
@@ -2039,24 +2281,13 @@ def main(page: ft.Page):
             height=42,
         )
 
-        # Prawy panel: dodano przyciski ⏮ KANAŁ - oraz ⏭ KANAŁ + i 📺 Lista VLC (zmiana kanałów bez wychodzenia)
-        btn_ch_prev = make_tv_button("⏮ Kanał -", lambda: switch_live_channel_relative(-1), height=42, expand=True)
-        btn_ch_next = make_tv_button("⏭ Kanał +", lambda: switch_live_channel_relative(1), height=42, expand=True)
-        btn_vlc_list = make_tv_button("📺 Lista VLC", launch_category_playlist_in_vlc, height=42, expand=True)
+        btn_vlc = make_tv_button("🚀 Wymuś VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"]), height=42, expand=True)
         btn_search_right = make_tv_button("🔍 Szukaj", open_search_panel, height=42, expand=True)
         btn_settings_menu = make_tv_button("⚙️ Ustawienia", open_settings_menu_dlg, height=42, expand=True)
         btn_home = make_tv_button("🏠 Menu", open_dashboard, height=42, expand=True)
         btn_exit_right = make_tv_button("🚪 ZAMKNIJ", force_exit_app, height=42, expand=True)
 
-        right_buttons = [
-            btn_ch_prev,
-            btn_ch_next,
-            btn_vlc_list,
-            btn_search_right,
-            btn_settings_menu,
-            btn_home,
-            btn_exit_right,
-        ]
+        right_buttons = [btn_vlc, btn_search_right, btn_settings_menu, btn_home, btn_exit_right]
 
         btn_remote_id = make_tv_button(f"🌐 Kod ID Odbiornika: {device_id} ({device_name})", open_remote_settings_dlg, height=42)
         btn_edit_srv = make_tv_button(f"🌐 Serwer: {creds['server'] or 'ustaw'}", lambda: open_field_editor("server", "Adres serwera (http://...)"), height=42)
@@ -2082,7 +2313,7 @@ def main(page: ft.Page):
             content=ft.Column(
                 [
                     ft.Row(
-                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V8.0 PRO", size=22, weight=ft.FontWeight.BOLD, color="#38bdf8")],
+                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V8.1 DARK", size=22, weight=ft.FontWeight.BOLD, color="#e4e4e7")],
                         alignment=ft.MainAxisAlignment.CENTER,
                         spacing=12,
                     ),
@@ -2097,7 +2328,7 @@ def main(page: ft.Page):
             alignment=ft.alignment.center,
             expand=True,
             visible=True,
-            bgcolor="#0b1f15",
+            bgcolor="#101216",
             padding=16,
         )
 
@@ -2106,14 +2337,14 @@ def main(page: ft.Page):
                 [
                     ft.Row(
                         [
-                            ft.Row([make_iptv_bp_badge(42), ft.Text("IPTV BP Player", size=19, weight=ft.FontWeight.BOLD, color="#34d399")], spacing=10),
+                            ft.Row([make_iptv_bp_badge(42), ft.Text("IPTV BP", size=19, weight=ft.FontWeight.BOLD, color="#e4e4e7")], spacing=10),
                             ft.Column([clock_txt, date_txt], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
                             ft.Container(
                                 content=ft.Row(dash_top_buttons, spacing=8),
-                                bgcolor="#112e22",
+                                bgcolor="#181a20",
                                 padding=6,
                                 border_radius=26,
-                                border=ft.border.all(1, "#22543d"),
+                                border=ft.border.all(1, "#2e323d"),
                             ),
                         ],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -2140,23 +2371,23 @@ def main(page: ft.Page):
             ),
             expand=True,
             visible=False,
-            bgcolor="#0b1f15",
+            bgcolor="#101216",
             padding=ft.padding.symmetric(horizontal=22, vertical=14),
         )
 
         left_panel = ft.Container(
             width=450,
-            bgcolor="#0f291d",
+            bgcolor="#16181f",
             padding=10,
             border_radius=10,
-            border=ft.border.all(2, "#0284c7"),
+            border=ft.border.all(2, "#52525b"),
         )
         right_panel = ft.Container(
             expand=True,
-            bgcolor="#0f291d",
+            bgcolor="#16181f",
             padding=12,
             border_radius=10,
-            border=ft.border.all(1, "#22543d"),
+            border=ft.border.all(1, "#2e323d"),
         )
 
         left_panel.content = ft.Column(
@@ -2165,7 +2396,7 @@ def main(page: ft.Page):
                 ft.Container(
                     content=list_header_lbl,
                     padding=ft.padding.symmetric(horizontal=10, vertical=5),
-                    bgcolor="#091811",
+                    bgcolor="#101216",
                     border_radius=6,
                 ),
                 list_column,
@@ -2179,7 +2410,7 @@ def main(page: ft.Page):
                 ft.Row(
                     [
                         ft.Row([make_iptv_bp_badge(32), header_dev_lbl], spacing=10),
-                        ft.Text("⬅️ Lista | ➡️ Prawy panel | CH+/CH- = zmiana kanału", size=12, color="#86efac"),
+                        ft.Text("⬅️ Lista | ➡️ Prawy panel", size=12, color="#a1a1aa"),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
@@ -2187,8 +2418,7 @@ def main(page: ft.Page):
                 settings_overlay_box,
                 search_overlay_box,
                 now_playing_txt,
-                ft.Row([btn_ch_prev, btn_ch_next, btn_vlc_list], spacing=6),
-                ft.Row([btn_search_right, btn_settings_menu, btn_home, btn_exit_right], spacing=6),
+                ft.Row(right_buttons, spacing=6),
             ],
             expand=True,
             spacing=6,
@@ -2198,12 +2428,12 @@ def main(page: ft.Page):
             content=ft.Row([left_panel, right_panel], expand=True, spacing=10),
             expand=True,
             visible=False,
-            bgcolor="#0b1f15",
+            bgcolor="#101216",
             padding=10,
         )
 
-        guard_view_1 = ft.View(route="/g1", controls=[ft.Container(bgcolor="#0b1f15", expand=True)], padding=0, bgcolor="#0b1f15")
-        guard_view_2 = ft.View(route="/g2", controls=[ft.Container(bgcolor="#0b1f15", expand=True)], padding=0, bgcolor="#0b1f15")
+        guard_view_1 = ft.View(route="/g1", controls=[ft.Container(bgcolor="#101216", expand=True)], padding=0, bgcolor="#101216")
+        guard_view_2 = ft.View(route="/g2", controls=[ft.Container(bgcolor="#101216", expand=True)], padding=0, bgcolor="#101216")
         main_app_view = ft.View(
             route="/app",
             controls=[
@@ -2212,12 +2442,13 @@ def main(page: ft.Page):
                         login_view,
                         dash_view,
                         dash_inner_view,
+                        fullscreen_player_view,
                     ],
                     expand=True,
                 )
             ],
             padding=0,
-            bgcolor="#0b1f15",
+            bgcolor="#101216",
         )
 
         page.views.clear()
@@ -2232,14 +2463,14 @@ def main(page: ft.Page):
 
             is_search_foc = (state["zone"] == "list_search")
             base_s_txt = btn_left_top_search.data["base_text"]
-            btn_left_top_search.bgcolor = "#0284c7" if is_search_foc else "#112e22"
-            btn_left_top_search.border = ft.border.all(3 if is_search_foc else 1, "#38bdf8" if is_search_foc else "#34d399")
-            btn_left_top_search.data["text_ctrl"].color = "white" if is_search_foc else "#38bdf8"
+            btn_left_top_search.bgcolor = "#3f3f46" if is_search_foc else "#1c1f26"
+            btn_left_top_search.border = ft.border.all(2.5 if is_search_foc else 1, "#f4f4f5" if is_search_foc else "#3f3f46")
+            btn_left_top_search.data["text_ctrl"].color = "white"
             btn_left_top_search.data["text_ctrl"].value = f"▶  {base_s_txt}" if is_search_foc else base_s_txt
 
             if total == 0:
                 list_column.controls.append(
-                    ft.Text("Brak pozycji. Kliknij 🔍 SZUKAJ powyżej, aby zmienić filtr.", color="#94a3b8", size=14)
+                    ft.Text("Brak pozycji. Kliknij 🔍 SZUKAJ powyżej, aby zmienić filtr.", color="#a1a1aa", size=14)
                 )
                 safe_ui_update()
                 return
@@ -2262,7 +2493,7 @@ def main(page: ft.Page):
                                 lbl,
                                 size=15 if is_foc else 14,
                                 weight=ft.FontWeight.BOLD,
-                                color="white" if is_foc else "#cbd5e1",
+                                color="white" if is_foc else "#d4d4d8",
                                 no_wrap=True,
                                 expand=True,
                             )
@@ -2272,8 +2503,8 @@ def main(page: ft.Page):
                     expand=True,
                     padding=ft.padding.symmetric(horizontal=12, vertical=4),
                     border_radius=8,
-                    bgcolor="#0284c7" if is_foc else "#163828",
-                    border=ft.border.all(3 if is_foc else 1, "#38bdf8" if is_foc else "#22543d"),
+                    bgcolor="#3f3f46" if is_foc else "#1c1f26",
+                    border=ft.border.all(2.5 if is_foc else 1, "#f4f4f5" if is_foc else "#2e323d"),
                     alignment=ft.alignment.center_left,
                     on_click=lambda _e, fn=entry["action"]: fn(),
                 )
@@ -2289,8 +2520,8 @@ def main(page: ft.Page):
                 for i, item in enumerate(login_items):
                     is_foc = (state["zone"] == "login" and state["login_idx"] == i)
                     base_t = item.data["base_text"]
-                    item.bgcolor = "#0284c7" if is_foc else ("#059669" if i == 5 else ("#7f1d1d" if i == 7 else "#163828"))
-                    item.border = ft.border.all(3 if is_foc else 1, "#38bdf8" if is_foc else "#22543d")
+                    item.bgcolor = "#3f3f46" if is_foc else ("#27272a" if i == 5 else ("#451a1a" if i == 7 else "#1c1f26"))
+                    item.border = ft.border.all(2.5 if is_foc else 1, "#f4f4f5" if is_foc else "#2e323d")
                     item.data["text_ctrl"].color = "white"
                     item.data["text_ctrl"].value = f"▶  {base_t}" if is_foc else base_t
                 safe_ui_update()
@@ -2304,19 +2535,19 @@ def main(page: ft.Page):
                 return
 
             left_panel.border = ft.border.all(
-                3 if state["zone"] in ("list", "list_search") else 1,
-                "#0284c7" if state["zone"] in ("list", "list_search") else "#22543d",
+                2.5 if state["zone"] in ("list", "list_search") else 1,
+                "#a1a1aa" if state["zone"] in ("list", "list_search") else "#2e323d",
             )
             right_panel.border = ft.border.all(
-                3 if state["zone"] == "right" else 1,
-                "#0284c7" if state["zone"] == "right" else "#22543d",
+                2.5 if state["zone"] == "right" else 1,
+                "#a1a1aa" if state["zone"] == "right" else "#2e323d",
             )
 
             for i, b in enumerate(right_buttons):
                 is_foc = (state["zone"] == "right" and state["right_idx"] == i)
                 base_t = b.data["base_text"]
-                b.bgcolor = "#0284c7" if is_foc else ("#7f1d1d" if b == btn_exit_right else "#163828")
-                b.border = ft.border.all(3 if is_foc else 1, "#38bdf8" if is_foc else "#22543d")
+                b.bgcolor = "#3f3f46" if is_foc else ("#451a1a" if b == btn_exit_right else "#1c1f26")
+                b.border = ft.border.all(2.5 if is_foc else 1, "#f4f4f5" if is_foc else "#2e323d")
                 b.data["text_ctrl"].color = "white"
                 b.data["text_ctrl"].value = f"▶ {base_t}" if is_foc else base_t
 
@@ -2432,12 +2663,6 @@ def main(page: ft.Page):
                     "action": back_to_cats,
                     "item": None,
                 })
-                if state["kind"] == "live" and raw:
-                    built.append({
-                        "label": "📺 OTWÓRZ CAŁĄ KATEGORIĘ W VLC (Zmieniaj kanały ⏮/⏭ bez wychodzenia!)",
-                        "action": launch_category_playlist_in_vlc,
-                        "item": None,
-                    })
 
             first_media_idx = len(built)
 
@@ -2754,6 +2979,13 @@ def main(page: ft.Page):
         def handle_universal_back():
             rebuild_guard_views()
 
+            if app_state["in_fullscreen_player"]:
+                if app_state["osd_list_open"]:
+                    close_osd_channel_overlay()
+                else:
+                    exit_fullscreen_player()
+                return
+
             if app_state["search_open"]:
                 close_search_panel()
                 return
@@ -2789,6 +3021,15 @@ def main(page: ft.Page):
                 return
             app_state["last_ok_ts"] = now
 
+            if app_state["in_fullscreen_player"]:
+                if not app_state["osd_list_open"]:
+                    open_osd_channel_overlay()
+                else:
+                    channels = state.get("osd_channels", [])
+                    if 0 <= state["osd_idx"] < len(channels):
+                        select_channel_from_osd(channels[state["osd_idx"]])
+                return
+
             if app_state["search_open"] and search_menu_buttons:
                 search_menu_buttons[state["search_idx"]].data["action"]()
                 return
@@ -2820,6 +3061,41 @@ def main(page: ft.Page):
 
         def on_key_event(e: ft.KeyboardEvent):
             key = e.key
+
+            # Obsługa pilota podczas oglądania kanału na pełnym ekranie (półprzezroczysta lista pod OK)
+            if app_state["in_fullscreen_player"]:
+                if app_state["osd_list_open"]:
+                    channels = state.get("osd_channels", [])
+                    if key == "Arrow Down" and channels:
+                        state["osd_idx"] = (state["osd_idx"] + 1) % len(channels)
+                        render_osd_channel_list()
+                    elif key == "Arrow Up" and channels:
+                        state["osd_idx"] = (state["osd_idx"] - 1) % len(channels)
+                        render_osd_channel_list()
+                    elif key in ("Page Down", "Channel Down") and channels:
+                        state["osd_idx"] = min(len(channels) - 1, state["osd_idx"] + OSD_VISIBLE_ROWS)
+                        render_osd_channel_list()
+                    elif key in ("Page Up", "Channel Up") and channels:
+                        state["osd_idx"] = max(0, state["osd_idx"] - OSD_VISIBLE_ROWS)
+                        render_osd_channel_list()
+                    elif key in ("Enter", "Select", " "):
+                        trigger_current_ok_action()
+                    elif key == "Arrow Right":
+                        launch_vlc_intent(state["playing_url"], state["now_playing"])
+                    elif key in ("Backspace", "Escape", "Browser Back", "Go Back", "Arrow Left"):
+                        close_osd_channel_overlay()
+                else:
+                    if key in ("Enter", "Select", " ", "Arrow Up", "Arrow Down"):
+                        open_osd_channel_overlay()
+                    elif key in ("Channel Up", "Media Track Next", "Page Up"):
+                        switch_live_channel_relative(1)
+                    elif key in ("Channel Down", "Media Track Previous", "Page Down"):
+                        switch_live_channel_relative(-1)
+                    elif key == "Arrow Right":
+                        launch_vlc_intent(state["playing_url"], state["now_playing"])
+                    elif key in ("Backspace", "Escape", "Browser Back", "Go Back"):
+                        exit_fullscreen_player()
+                return
 
             if app_state["search_open"] and search_menu_buttons:
                 if key == "Arrow Down":
@@ -2907,7 +3183,6 @@ def main(page: ft.Page):
             if dash_inner_view.visible:
                 total_built = len(state["all_built_items"])
 
-                # Bezpośrednia zmiana kanału na żywo przyciskami CH+ / CH- oraz Media Next / Previous
                 if key in ("Channel Up", "Media Track Next") and state["view_mode"] == "streams" and state["kind"] == "live":
                     switch_live_channel_relative(1)
                     return
