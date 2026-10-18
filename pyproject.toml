@@ -1,7 +1,7 @@
 [project]
 name = "iptv_bp_pro"
-version = "7.5.0"
-description = "IPTV BP V7.5 PRO Android TV"
+version = "7.6.0"
+description = "IPTV BP V7.6 PRO Android TV"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
@@ -10,17 +10,20 @@ dependencies = [
 ]
 
 [tool.flet]
-org = "com.iptv.bp"
+org = "com.iptv.bp.v7"
 product = "IPTV BP"
 company = "IPTV BP Remote Cloud"
 copyright = "Copyright (C) 2026"
+icon = "icon.png"
 
 [tool.flet.app]
 path = "."
 assets_dir = "assets"
 
 [tool.flet.android]
+icon = "icon.png"
 adaptive_icon_background = "#ea580c"
+adaptive_icon_foreground = "icon.png"
 
 [tool.flet.splash]
 color = "#0b1f15"
