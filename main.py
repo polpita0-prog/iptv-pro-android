@@ -61,7 +61,8 @@ def clean_display_name(name: str) -> str:
         return ""
     s = strip_unwanted_chars(name)
     s = re.sub(r"^(\s*[\|\[\(\{]\s*[A-Za-z0-9\+\-\s_]{1,12}\s*[\|\]\)\}]\s*[:\-_\|]*\s*)+", "", s)
-    s = re.sub(r"^(PL|POL|VIP|TV|VOD|SER|FILMY|SERIALE)\s*[:\|]+\s*", "", s, flags=re.IGNORECASE)
+    # Wymaga separatora (: lub | lub -), aby nie uciąć np. słowa "Polsat" czy "Serial"
+    s = re.sub(r"^(PL|POL|VIP|TV|VOD|SER|FILMY|SERIALE)\s*[:\|\-]+\s*", "", s, flags=re.IGNORECASE)
     s = re.sub(r"^[#\-_:\|\•\*\+]+\s*", "", s)
     s = re.sub(r"\s*[#\-_:\|]+$", "", s)
     return s.strip() or strip_unwanted_chars(name)
@@ -102,7 +103,7 @@ def is_polish_text(text: str) -> bool:
     return bool(PL_REGEX.search(str(text)))
 
 
-def has_polish_Readability(text: str) -> bool:
+def has_polish_readability(text: str) -> bool:
     """Sprawdza, czy opis jest faktycznie w języku polskim."""
     if not text or len(text.strip()) < 15:
         return False
@@ -243,7 +244,7 @@ def translate_to_polish_free(text: str) -> str:
     clean_t = strip_unwanted_chars(text)
     if not clean_t or len(clean_t) < 8:
         return ""
-    if has_polish_Readability(clean_t):
+    if has_polish_readability(clean_t):
         return clean_t
 
     cache_k = clean_t[:120].lower()
@@ -300,7 +301,6 @@ def fetch_polish_wikipedia_plot(title_queries: list, media_hint: str = None) -> 
                     page_title = s_it.get("title") or ""
                     if not page_title:
                         continue
-                    # Sprawdzamy trafność tytułu
                     if q_clean.lower() not in page_title.lower() and page_title.lower() not in q_clean.lower():
                         continue
                     sum_url = f"https://pl.wikipedia.org/api/rest_v1/page/summary/{quote(page_title)}"
@@ -310,7 +310,7 @@ def fetch_polish_wikipedia_plot(title_queries: list, media_hint: str = None) -> 
                         if s_data.get("type") == "disambiguation":
                             continue
                         extract = strip_unwanted_chars(s_data.get("extract") or "")
-                        if len(extract) > 45 and has_polish_Readability(extract):
+                        if len(extract) > 45 and has_polish_readability(extract):
                             return extract
             except Exception:
                 continue
@@ -382,7 +382,6 @@ def fetch_rich_polish_metadata(title: str, media_hint: str = None, xtream_info: 
         "seasons_info": "",
     }
 
-    # Warianty tytułu (np. gdy tytuł ma postać "Polski Tytuł / English Title")
     candidate_queries = [clean_title]
     for sep in (" / ", " - ", " | "):
         if sep in clean_title:
@@ -394,7 +393,6 @@ def fetch_rich_polish_metadata(title: str, media_hint: str = None, xtream_info: 
     best = None
     m_type = "tv" if media_hint == "series" else "movie"
 
-    # 1. Próba pobrania z TMDB
     for q_try in candidate_queries:
         try:
             endpoints = [
@@ -507,13 +505,12 @@ def fetch_rich_polish_metadata(title: str, media_hint: str = None, xtream_info: 
         if backdrop_path:
             res["backdrop"] = f"https://image.tmdb.org/t/p/w780{backdrop_path}"
 
-        if overview_pl and has_polish_Readability(overview_pl):
+        if overview_pl and has_polish_readability(overview_pl):
             res["plot"] = overview_pl
             res["plot_source"] = "TMDB PL"
         elif overview_pl:
             en_overview_fallback = overview_pl
 
-    # 2. Sprawdzenie metadanych z serwera Xtream (jeśli zostały przekazane)
     if xtream_info and isinstance(xtream_info, dict):
         xt_plot = strip_unwanted_chars(
             xtream_info.get("plot")
@@ -522,7 +519,7 @@ def fetch_rich_polish_metadata(title: str, media_hint: str = None, xtream_info: 
             or ""
         )
         if not res["plot"] and xt_plot:
-            if has_polish_Readability(xt_plot):
+            if has_polish_readability(xt_plot):
                 res["plot"] = xt_plot
                 res["plot_source"] = "Serwer VOD PL"
             elif not en_overview_fallback:
@@ -545,21 +542,18 @@ def fetch_rich_polish_metadata(title: str, media_hint: str = None, xtream_info: 
         if not res["rating"] and xtream_info.get("rating"):
             res["rating"] = str(xtream_info.get("rating"))
 
-    # 3. Jeśli nadal brak polskiego opisu -> szukamy w Polskiej Wikipedii
     if not res["plot"]:
         wiki_plot = fetch_polish_wikipedia_plot(candidate_queries, media_hint=media_hint)
         if wiki_plot:
             res["plot"] = wiki_plot
             res["plot_source"] = "Wikipedia PL"
 
-    # 4. Jeśli nadal brak polskiego opisu, a mamy opis angielski z TMDB/Xtream -> tłumaczymy na PL
     if not res["plot"] and en_overview_fallback:
         translated_plot = translate_to_polish_free(en_overview_fallback)
         if translated_plot:
             res["plot"] = translated_plot
             res["plot_source"] = "TMDB / Tłumaczenie PL"
 
-    # 5. Jeśli nadal brak opisu lub plakatu -> odpytujemy TVMaze API (z tłumaczeniem na PL)
     if not res["plot"] or not res["poster"]:
         tvm = fetch_tvmaze_details(candidate_queries)
         if tvm:
@@ -1061,6 +1055,14 @@ def main(page: ft.Page):
                 page.update()
             except Exception:
                 pass
+
+        def show_modal_dialog(dlg: ft.AlertDialog):
+            """Bezpiecznie wyświetla okno dialogowe bez wycieków pamięci w page.overlay."""
+            app_state["dialog_open"] = True
+            page.overlay.clear()
+            page.overlay.append(dlg)
+            dlg.open = True
+            safe_ui_update()
 
         def force_exit_app(_e=None):
             stop_event.set()
@@ -1920,13 +1922,13 @@ def main(page: ft.Page):
             max_lines=5,
         )
 
-        # Górny banner szybkiego zappingu (pokazuje się przy przełączaniu ⬆️ / ⬇️ bez wychodzenia)
+        # Górny banner szybkiego zappingu (bezpieczny Text zamiast ft.Icon(None))
         zap_banner_title = ft.Text("", size=20, weight=ft.FontWeight.BOLD, color="#ffffff", no_wrap=True)
         zap_banner_sub = ft.Text("", size=13, color="#d4d4d8", no_wrap=True)
         zap_top_banner = ft.Container(
             content=ft.Row(
                 [
-                    ft.Icon(ft.Icons.LIVE_TV if hasattr(ft, "Icons") else None, color="#eab308", size=24),
+                    ft.Text("📺", size=24),
                     ft.Column([zap_banner_title, zap_banner_sub], spacing=2, tight=True, expand=True),
                     ft.Text("⬆️/⬇️ Zmień kanał | OK Lista", size=12, color="#a1a1aa", weight=ft.FontWeight.BOLD),
                 ],
@@ -2135,7 +2137,7 @@ def main(page: ft.Page):
         )
 
         def show_zapper_top_banner(ch_num: int, ch_total: int, title: str):
-            zap_banner_title.value = f"📺 {ch_num}. {title}"
+            zap_banner_title.value = f"{ch_num}. {title}"
             zap_banner_sub.value = f"Kanał {ch_num} z {max(1, ch_total)} | Przełączono bez wychodzenia"
             zap_top_banner.visible = True
             safe_ui_update()
@@ -2804,7 +2806,13 @@ def main(page: ft.Page):
                         existing_vid.play()
                         switched_in_place = True
                     except Exception:
-                        switched_in_place = False
+                        try:
+                            existing_vid.playlist = [VideoMediaClass(url)]
+                            existing_vid.update()
+                            existing_vid.play()
+                            switched_in_place = True
+                        except Exception:
+                            switched_in_place = False
 
                     if not switched_in_place:
                         try:
@@ -3242,7 +3250,6 @@ def main(page: ft.Page):
 
         def open_remote_settings_dlg(_e=None):
             nonlocal device_name, device_id
-            app_state["dialog_open"] = True
             name_in = ft.TextField(label="Nazwa odbiornika", value=cache_get("device_name", device_name))
             id_in = ft.TextField(label="Unikalny Kod ID (wpisz ten sam w panelu zdalnym)", value=cache_get("device_id", device_id))
 
@@ -3273,9 +3280,7 @@ def main(page: ft.Page):
                 ],
                 on_dismiss=lambda _: app_state.update({"dialog_open": False}),
             )
-            page.overlay.append(dlg)
-            dlg.open = True
-            safe_ui_update()
+            show_modal_dialog(dlg)
 
         def refresh_login_button_labels():
             set_tv_button_text(btn_remote_id, f"🌐 Kod ID Odbiornika: {device_id} ({device_name})")
@@ -3407,7 +3412,6 @@ def main(page: ft.Page):
                 safe_ui_update()
                 return
 
-            app_state["dialog_open"] = True
             col_items = []
 
             def _select_p(prof):
@@ -3463,12 +3467,9 @@ def main(page: ft.Page):
                 ],
                 on_dismiss=lambda _: app_state.update({"dialog_open": False}),
             )
-            page.overlay.append(dlg)
-            dlg.open = True
-            safe_ui_update()
+            show_modal_dialog(dlg)
 
         def open_field_editor(field_key, title_str, is_pass=False):
-            app_state["dialog_open"] = True
             tf_in = ft.TextField(label=title_str, value=creds.get(field_key, ""), password=is_pass, autofocus=True, on_submit=lambda _: _save())
 
             def _save(_=None):
@@ -3485,9 +3486,7 @@ def main(page: ft.Page):
                 actions=[ft.ElevatedButton("Zapisz", on_click=_save, bgcolor="#3f3f46", color="white")],
                 on_dismiss=lambda _: app_state.update({"dialog_open": False}),
             )
-            page.overlay.append(dlg)
-            dlg.open = True
-            safe_ui_update()
+            show_modal_dialog(dlg)
 
         settings_menu_buttons = []
 
