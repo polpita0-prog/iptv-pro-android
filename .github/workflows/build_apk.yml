@@ -1,4 +1,9 @@
 name: Build IPTV BP Dark APK
+env:
+  # Naprawia "Caught exception: Already watching path: /tmp/flet_flutter_build_..."
+  # oraz zapobiega zabiciu procesu przez brak pamięci RAM (Error: The operation was canceled)
+  GRADLE_OPTS: "-Dorg.gradle.vfs.watch=false -Dorg.gradle.daemon=false -Dorg.gradle.parallel=false -Dorg.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=768m"
+  JAVA_OPTS: "-Xmx3072m"
 
 on:
   push:
