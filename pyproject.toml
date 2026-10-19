@@ -38,3 +38,8 @@ wakelock_plus_platform_interface = "1.2.1"
 package_info_plus = "8.0.2"
 package_info_plus_platform_interface = "3.0.1"
 web = "0.5.1"
+
+[tool.flet.android]
+compile_sdk_version = 35
+target_sdk_version = 34
+min_sdk_version = 21
