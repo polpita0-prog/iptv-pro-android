@@ -1,60 +1,52 @@
-name: Build Flet APK
+name: Build Android TV APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
-  build-apk:
+  build-android-apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-
-    env:
-      GRADLE_OPTS: "-Dorg.gradle.vfs.watch=false -Dorg.gradle.daemon=false -Dorg.gradle.parallel=false -Dorg.gradle.jvmargs=-Xmx3584m -XX:MaxMetaspaceSize=1024m"
-      JAVA_OPTS: "-Xmx3584m"
 
     steps:
-      - name: Checkout repo
+      - name: Pobierz kod z repozytorium
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Konfiguracja Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Set up JDK 17
+      - name: Konfiguracja Java JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
           java-version: "17"
 
-      - name: Install Android SDK 35 & Licenses
-        run: |
-          yes | sudo /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          sudo /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "platforms;android-34" "build-tools;35.0.0"
+      - name: Konfiguracja Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: "3.24.5"
+          cache: true
 
-      - name: Free up disk & memory space (opcjonalnie przyspiesza build)
+      - name: Instalacja zależności Python i Flet
         run: |
-          sudo swapoff -a
-          sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Install Flet and dependencies
+      - name: Sprawdzenie składni main.py
         run: |
-          pip install --upgrade pip
-          pip install flet requests
-          # Jeśli używasz flet-video, odkomentuj poniższą linię:
-          # pip install flet-video
+          python -m py_compile main.py
 
-      - name: Build Android APK
+      - name: Budowanie pakietu APK (Flet Build)
         run: |
-          flet build apk --no-rich-output --Verbose
+          flet build apk --verbose --no-rich-output
 
-      - name: Upload APK Artifact
+      - name: Publikacja gotowego pliku APK w Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: iptv-bp-apk
+          name: IPTV-BP-AndroidTV-APK
           path: build/apk/*.apk
+          if-no-files-found: error
