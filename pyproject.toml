@@ -1,45 +1,46 @@
 [project]
-name = "iptv_bp_pro"
-version = "7.6.0"
-description = "IPTV BP V7.6 PRO Android TV"
+name = "iptv-bp"
+version = "4.2.0"
+description = "IPTV BP - Odtwarzacz Android TV & PC (PL Metadata & OSD)"
 readme = "README.md"
 requires-python = ">=3.9"
+authors = [
+    { name = "IPTV BP", email = "iptv@example.com" }
+]
 dependencies = [
-    "flet==0.24.1",
+    "flet==0.25.2",
+    "flet-video==0.1.0",
     "requests>=2.31.0",
+    "urllib3>=2.0.0",
+    "certifi",
 ]
 
 [tool.flet]
-org = "com.iptv.bp.v7"
+org = "pl.iptvbp"
 product = "IPTV BP"
-company = "IPTV BP Remote Cloud"
-copyright = "Copyright (C) 2026"
-icon = "icon.png"
+company = "IPTV BP"
+copyright = "Copyright (C) 2026 by IPTV BP"
+build_number = 42
 
 [tool.flet.app]
 path = "."
-assets_dir = "assets"
 
 [tool.flet.android]
-icon = "icon.png"
-adaptive_icon_background = "#ea580c"
-adaptive_icon_foreground = "icon.png"
+split_per_abi = false
 
-[tool.flet.splash]
-color = "#0b1f15"
-dark_color = "#0b1f15"
-web = false
-ios = false
-android = true
+[tool.flet.android.permission]
+"android.permission.INTERNET" = true
+"android.permission.ACCESS_NETWORK_STATE" = true
+"android.permission.ACCESS_WIFI_STATE" = true
+"android.permission.WAKE_LOCK" = true
 
-[tool.flet.flutter.pubspec.dependency_overrides]
-wakelock_plus = "1.2.8"
-wakelock_plus_platform_interface = "1.2.1"
-package_info_plus = "8.0.2"
-package_info_plus_platform_interface = "3.0.1"
-web = "0.5.1"
+[tool.flet.android.feature]
+"android.software.leanback" = false
+"android.hardware.touchscreen" = false
 
-[tool.flet.android]
-compile_sdk_version = 35
-target_sdk_version = 34
-min_sdk_version = 21
+[tool.flet.android.meta_data]
+"io.flutter.embedding.android.EnableImpeller" = "false"
+
+[tool.flet.android.manifest_application]
+usesCleartextTraffic = "true"
+banner = "@mipmap/ic_launcher"
