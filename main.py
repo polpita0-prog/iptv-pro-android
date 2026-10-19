@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 import base64
 import datetime
+import html
 import json
 import os
 import re
+import tempfile
 import threading
 import time
 import traceback
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 import uuid
 
 import flet as ft
@@ -41,10 +43,76 @@ PL_REGEX = re.compile(
 )
 
 
+def strip_unwanted_chars(text: str) -> str:
+    """Usuwa niepotrzebne znaki sterujące, znaczniki HTML i dziwne symbole z tekstu."""
+    if not text:
+        return ""
+    s = html.unescape(str(text))
+    s = s.replace("\xa0", " ").replace("\u200b", "").replace("\r", " ")
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"[★☆●•▪▫◆◇■□►▶◀◁⚡🔥]+", " ", s)
+    s = re.sub(r"\s{2,}", " ", s)
+    return s.strip()
+
+
+def clean_display_name(name: str) -> str:
+    """Czyści nazwę wyświetlaną na liście z niepotrzebnych prefiksów typu |PL|, [VIP], ### itp."""
+    if not name:
+        return ""
+    s = strip_unwanted_chars(name)
+    s = re.sub(r"^(\s*[\|\[\(\{]\s*[A-Za-z0-9\+\-\s_]{1,12}\s*[\|\]\)\}]\s*[:\-_\|]*\s*)+", "", s)
+    s = re.sub(r"^(PL|POL|VIP|TV|VOD|SER|FILMY|SERIALE)\s*[:\|]+\s*", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^[#\-_:\|\•\*\+]+\s*", "", s)
+    s = re.sub(r"\s*[#\-_:\|]+$", "", s)
+    return s.strip() or strip_unwanted_chars(name)
+
+
+def clean_media_title(title: str) -> str:
+    """Agresywne czyszczenie tytułu filmu/serialu pod kątem wyszukiwarek opisów (TMDB, Wiki, TVMaze)."""
+    if not title:
+        return ""
+    clean = clean_display_name(title)
+    clean = re.sub(r"^(\|?[A-Za-z0-9]{2,5}\|?\s*[:|\-]+\s*)+", "", clean)
+    clean = re.sub(r"\[.*?\]|\{.*?\}", " ", clean)
+    clean = re.sub(r"\s*[Ss]\d{1,2}\s*[Ee]\d{1,3}.*$", "", clean)
+    clean = re.sub(r"\s*-\s*Sezon\s*\d+.*$", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\s*\(\d{4}\).*$", "", clean)
+    clean = re.sub(r"\s+\b(19\d{2}|20\d{2})\b.*$", "", clean)
+    clean = re.sub(
+        r"\b(FHD|UHD|4K|8K|HD|SD|1080p|720p|2160p|HEVC|H265|H264|x264|x265|WEB-DL|WEBRip|BluRay|BRRip|DVDRip|LEKTOR|DUBBING|NAPISY|PL|POL|EN|ENG|MULTI|RAW|VIP)\b.*$",
+        "",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    clean = re.sub(r"[_•\|]+", " ", clean)
+    clean = re.sub(r"\s{2,}", " ", clean)
+    return clean.strip(" -|_:/•.")
+
+
+def extract_year_from_title(title: str) -> str:
+    if not title:
+        return ""
+    m = re.search(r"(?:[\(\[\s])(19\d{2}|20\d{2})(?:[\)\]\s]|$)", str(title))
+    return m.group(1) if m else ""
+
+
 def is_polish_text(text: str) -> bool:
     if not text:
         return False
     return bool(PL_REGEX.search(str(text)))
+
+
+def has_polish_Readability(text: str) -> bool:
+    """Sprawdza, czy opis jest faktycznie w języku polskim."""
+    if not text or len(text.strip()) < 15:
+        return False
+    if re.search(r"[ąćęłńóśźżĄĆĘŁŃÓŚŹŻ]", text):
+        return True
+    pl_words = re.findall(
+        r"\b(jest|oraz|który|która|które|jego|jej|przez|kiedy|gdy|życie|historia|bohater|świat|film|serial|opowiada|losy|młody|czasie|jednak|tylko|więcej|między)\b",
+        text.lower(),
+    )
+    return len(pl_words) >= 2
 
 
 def is_polish_item(item: dict, pl_cat_ids: set = None) -> bool:
@@ -75,9 +143,10 @@ def decode_b64_safe(val: str) -> str:
     if not val:
         return ""
     try:
-        return base64.b64decode(val).decode("utf-8", errors="ignore").strip()
+        raw = base64.b64decode(val).decode("utf-8", errors="ignore")
+        return strip_unwanted_chars(raw)
     except Exception:
-        return str(val).strip()
+        return strip_unwanted_chars(str(val))
 
 
 def get_added_timestamp(item: dict) -> int:
@@ -161,133 +230,354 @@ def extract_xtream_from_m3u_url(m3u_url):
     return None
 
 
-def clean_media_title(title):
-    if not title:
-        return ""
-    clean = re.sub(r"^(\|?[A-Za-z0-9]{2,5}\|?\s*[:|\-]+\s*)+", "", title)
-    clean = re.sub(r"\[.*?\]", "", clean)
-    clean = re.sub(r"\s*[Ss]\d{1,2}\s*[Ee]\d{1,3}.*$", "", clean)
-    clean = re.sub(r"\s*\(\d{4}\).*$", "", clean)
-    clean = re.sub(
-        r"\b(FHD|UHD|4K|HD|1080p|720p|HEVC|H265|LEKTOR|DUBBING|NAPISY|PL|EN|FR)\b.*$",
-        "",
-        clean,
-        flags=re.IGNORECASE,
-    )
-    return clean.strip(" -|_:")
-
-
+# =====================================================================
+# WIELOŹRÓDŁOWY SILNIK OPISÓW PL (TMDB + WIKIPEDIA PL + TVMAZE + TRANSLATOR)
+# =====================================================================
 tmdb_memory_cache = {}
 epg_memory_cache = {}
+translate_memory_cache = {}
 
 
-def fetch_tmdb_details(title, media_hint=None):
-    clean_title = clean_media_title(title)
-    if not clean_title:
-        return None
-    cache_key = f"{media_hint or 'multi'}:{clean_title.lower()}"
-    if cache_key in tmdb_memory_cache:
-        return tmdb_memory_cache[cache_key]
+def translate_to_polish_free(text: str) -> str:
+    """Automatycznie tłumaczy opis obcojęzyczny (np. z angielskiego) na język polski."""
+    clean_t = strip_unwanted_chars(text)
+    if not clean_t or len(clean_t) < 8:
+        return ""
+    if has_polish_Readability(clean_t):
+        return clean_t
+
+    cache_k = clean_t[:120].lower()
+    if cache_k in translate_memory_cache:
+        return translate_memory_cache[cache_k]
+
     try:
-        search_Url = (
-            f"https://api.themoviedb.org/3/search/multi"
-            f"?api_key={TMDB_API_KEY}&query={requests.utils.quote(clean_title)}&language=pl-PL"
+        url = (
+            "https://translate.googleapis.com/translate_a/single"
+            f"?client=gtx&sl=auto&tl=pl&dt=t&q={quote(clean_t[:1800])}"
         )
-        r = requests.get(search_Url, timeout=4)
-        if r.status_code != 200:
-            return None
-        results = r.json().get("results", [])
-        if not results:
-            return None
+        r = requests.get(url, headers=DEFAULT_HEADERS, timeout=3.5)
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list) and data and isinstance(data[0], list):
+                translated = "".join(part[0] for part in data[0] if part and part[0])
+                translated = strip_unwanted_chars(translated)
+                if translated:
+                    translate_memory_cache[cache_k] = translated
+                    return translated
+    except Exception:
+        pass
+    return clean_t
 
-        best = results[0]
-        m_type = best.get("media_type") or ("tv" if media_hint == "series" else "movie")
-        if m_type not in ("movie", "tv"):
-            m_type = "tv" if media_hint == "series" else "movie"
 
+def fetch_polish_wikipedia_plot(title_queries: list, media_hint: str = None) -> str:
+    """Pobiera polski opis filmu/serialu bezpośrednio z polskiej Wikipedii."""
+    suffixes = (
+        [" (serial telewizyjny)", " (serial)", ""]
+        if media_hint == "series"
+        else [" (film)", ""]
+    )
+    tried = set()
+    for base_q in title_queries:
+        q_clean = clean_media_title(base_q)
+        if not q_clean or len(q_clean) < 2:
+            continue
+        for sfx in suffixes:
+            full_q = f"{q_clean}{sfx}".strip()
+            if full_q.lower() in tried:
+                continue
+            tried.add(full_q.lower())
+            try:
+                search_url = (
+                    "https://pl.wikipedia.org/w/api.php"
+                    f"?action=query&list=search&srsearch={quote(full_q)}"
+                    "&utf8=1&format=json&srlimit=3"
+                )
+                r = requests.get(search_url, headers=DEFAULT_HEADERS, timeout=3.0)
+                if r.status_code != 200:
+                    continue
+                s_items = ((r.json() or {}).get("query") or {}).get("search") or []
+                for s_it in s_items:
+                    page_title = s_it.get("title") or ""
+                    if not page_title:
+                        continue
+                    # Sprawdzamy trafność tytułu
+                    if q_clean.lower() not in page_title.lower() and page_title.lower() not in q_clean.lower():
+                        continue
+                    sum_url = f"https://pl.wikipedia.org/api/rest_v1/page/summary/{quote(page_title)}"
+                    rs = requests.get(sum_url, headers=DEFAULT_HEADERS, timeout=3.0)
+                    if rs.status_code == 200:
+                        s_data = rs.json() or {}
+                        if s_data.get("type") == "disambiguation":
+                            continue
+                        extract = strip_unwanted_chars(s_data.get("extract") or "")
+                        if len(extract) > 45 and has_polish_Readability(extract):
+                            return extract
+            except Exception:
+                continue
+    return ""
+
+
+def fetch_tvmaze_details(title_queries: list) -> dict:
+    """Alternatywne źródło metadanych z bazy TVMaze (szczególnie przydatne dla seriali i programów)."""
+    for q in title_queries:
+        q_clean = clean_media_title(q)
+        if not q_clean:
+            continue
+        try:
+            url = f"https://api.tvmaze.com/singlesearch/shows?q={quote(q_clean)}"
+            r = requests.get(url, headers=DEFAULT_HEADERS, timeout=3.0)
+            if r.status_code == 200:
+                data = r.json() or {}
+                summary_raw = strip_unwanted_chars(data.get("summary") or "")
+                summary_pl = translate_to_polish_free(summary_raw) if summary_raw else ""
+                img_dict = data.get("image") or {}
+                rating_val = ((data.get("rating") or {}).get("average")) or ""
+                premiered = (data.get("premiered") or "")[:4]
+                genres = ", ".join(data.get("genres") or [])
+                return {
+                    "title": strip_unwanted_chars(data.get("name") or q_clean),
+                    "plot": summary_pl,
+                    "poster": img_dict.get("original") or img_dict.get("medium"),
+                    "rating": str(rating_val) if rating_val else "",
+                    "year": premiered,
+                    "genres": translate_to_polish_free(genres) if genres else "",
+                }
+        except Exception:
+            continue
+    return {}
+
+
+def fetch_rich_polish_metadata(title: str, media_hint: str = None, xtream_info: dict = None) -> dict:
+    """
+    Kompleksowe pobieranie polskich opisów z wielu źródeł:
+    1) TMDB pl-PL (szukanie multi + movie/tv + dopasowanie roku)
+    2) Serwer Xtream VOD/Series Info (z tłumaczeniem na PL, jeśli opis jest po angielsku)
+    3) Polska Wikipedia API (pl.wikipedia.org)
+    4) TVMaze API + Auto-tłumaczenie EN -> PL
+    5) TMDB en-US + Auto-tłumaczenie EN -> PL
+    """
+    clean_title = clean_media_title(title)
+    year_hint = extract_year_from_title(title)
+    if not clean_title:
+        return {}
+
+    cache_key = f"{media_hint or 'multi'}:{clean_title.lower()}:{year_hint}"
+    if cache_key in tmdb_memory_cache and not xtream_info:
+        return tmdb_memory_cache[cache_key]
+
+    res = {
+        "title_pl": clean_title,
+        "original_title": "",
+        "poster": None,
+        "backdrop": None,
+        "plot": "",
+        "plot_source": "",
+        "rating": "",
+        "votes": "",
+        "year": year_hint,
+        "genres": "",
+        "cast": "",
+        "director": "",
+        "runtime": "",
+        "seasons_info": "",
+    }
+
+    # Warianty tytułu (np. gdy tytuł ma postać "Polski Tytuł / English Title")
+    candidate_queries = [clean_title]
+    for sep in (" / ", " - ", " | "):
+        if sep in clean_title:
+            parts = [p.strip() for p in clean_title.split(sep) if len(p.strip()) >= 2]
+            for p in parts:
+                if p not in candidate_queries:
+                    candidate_queries.append(p)
+
+    best = None
+    m_type = "tv" if media_hint == "series" else "movie"
+
+    # 1. Próba pobrania z TMDB
+    for q_try in candidate_queries:
+        try:
+            endpoints = [
+                f"https://api.themoviedb.org/3/search/{m_type}?api_key={TMDB_API_KEY}&query={quote(q_try)}&language=pl-PL"
+                + (f"&year={year_hint}" if (year_hint and m_type == "movie") else ""),
+                f"https://api.themoviedb.org/3/search/multi?api_key={TMDB_API_KEY}&query={quote(q_try)}&language=pl-PL",
+            ]
+            for s_url in endpoints:
+                r = requests.get(s_url, timeout=3.5)
+                if r.status_code == 200:
+                    results = [
+                        it for it in (r.json().get("results") or [])
+                        if it.get("media_type") in (None, "movie", "tv")
+                    ]
+                    if results:
+                        best = results[0]
+                        if best.get("media_type") in ("movie", "tv"):
+                            m_type = best["media_type"]
+                        break
+            if best:
+                break
+        except Exception:
+            pass
+
+    en_overview_fallback = ""
+
+    if best:
         tmdb_id = best.get("id")
         poster_path = best.get("poster_path")
         backdrop_path = best.get("backdrop_path")
         release = best.get("release_date") or best.get("first_air_date") or ""
-        overview = (best.get("overview") or "").strip()
+        overview_pl = strip_unwanted_chars(best.get("overview") or "")
 
-        genres_list = []
-        cast_list = []
-        director_str = ""
-        runtime_str = ""
-        seasons_count = ""
+        res["title_pl"] = strip_unwanted_chars(best.get("title") or best.get("name") or clean_title)
+        res["original_title"] = strip_unwanted_chars(best.get("original_title") or best.get("original_name") or "")
+        if res["original_title"] and res["original_title"] not in candidate_queries:
+            candidate_queries.append(res["original_title"])
+
+        if best.get("vote_average"):
+            res["rating"] = str(round(float(best.get("vote_average", 0)), 1))
+        if best.get("vote_count"):
+            res["votes"] = str(best.get("vote_count", ""))
+        if release:
+            res["year"] = release[:4]
 
         if tmdb_id:
-            det_url = (
-                f"https://api.themoviedb.org/3/{m_type}/{tmdb_id}"
-                f"?api_key={TMDB_API_KEY}&language=pl-PL&append_to_response=credits"
+            try:
+                det_url = (
+                    f"https://api.themoviedb.org/3/{m_type}/{tmdb_id}"
+                    f"?api_key={TMDB_API_KEY}&language=pl-PL&append_to_response=credits"
+                )
+                rd = requests.get(det_url, timeout=3.5)
+                if rd.status_code == 200:
+                    det_data = rd.json() or {}
+                    if not overview_pl:
+                        overview_pl = strip_unwanted_chars(det_data.get("overview") or "")
+                    if not poster_path:
+                        poster_path = det_data.get("poster_path")
+                    if not backdrop_path:
+                        backdrop_path = det_data.get("backdrop_path")
+                    genres_list = [
+                        strip_unwanted_chars(g.get("name"))
+                        for g in (det_data.get("genres") or [])
+                        if g.get("name")
+                    ]
+                    res["genres"] = ", ".join(genres_list[:4])
+
+                    if m_type == "movie":
+                        rt_m = det_data.get("runtime")
+                        if rt_m:
+                            res["runtime"] = f"{rt_m} min"
+                    else:
+                        s_cnt = det_data.get("number_of_seasons")
+                        e_cnt = det_data.get("number_of_episodes")
+                        if s_cnt:
+                            res["seasons_info"] = f"Sezony: {s_cnt}" + (f" ({e_cnt} odc.)" if e_cnt else "")
+                        ep_rt = det_data.get("episode_run_time") or []
+                        if ep_rt:
+                            res["runtime"] = f"~{ep_rt[0]} min/odc."
+
+                    credits = det_data.get("credits") or {}
+                    cast_raw = credits.get("cast") or []
+                    cast_list = [strip_unwanted_chars(c.get("name")) for c in cast_raw[:6] if c.get("name")]
+                    res["cast"] = ", ".join(cast_list)
+
+                    crew_raw = credits.get("crew") or []
+                    directors = [
+                        strip_unwanted_chars(c.get("name"))
+                        for c in crew_raw
+                        if c.get("job") in ("Director", "Series Director", "Creator") and c.get("name")
+                    ]
+                    if not directors and det_data.get("created_by"):
+                        directors = [strip_unwanted_chars(c.get("name")) for c in det_data.get("created_by") if c.get("name")]
+                    if directors:
+                        res["director"] = ", ".join(directors[:2])
+            except Exception:
+                pass
+
+            if not overview_pl:
+                try:
+                    en_url = f"https://api.themoviedb.org/3/{m_type}/{tmdb_id}?api_key={TMDB_API_KEY}&language=en-US"
+                    ren = requests.get(en_url, timeout=3.0)
+                    if ren.status_code == 200:
+                        en_overview_fallback = strip_unwanted_chars(ren.json().get("overview") or "")
+                except Exception:
+                    pass
+
+        if poster_path:
+            res["poster"] = f"https://image.tmdb.org/t/p/w500{poster_path}"
+        if backdrop_path:
+            res["backdrop"] = f"https://image.tmdb.org/t/p/w780{backdrop_path}"
+
+        if overview_pl and has_polish_Readability(overview_pl):
+            res["plot"] = overview_pl
+            res["plot_source"] = "TMDB PL"
+        elif overview_pl:
+            en_overview_fallback = overview_pl
+
+    # 2. Sprawdzenie metadanych z serwera Xtream (jeśli zostały przekazane)
+    if xtream_info and isinstance(xtream_info, dict):
+        xt_plot = strip_unwanted_chars(
+            xtream_info.get("plot")
+            or xtream_info.get("description")
+            or xtream_info.get("overview")
+            or ""
+        )
+        if not res["plot"] and xt_plot:
+            if has_polish_Readability(xt_plot):
+                res["plot"] = xt_plot
+                res["plot_source"] = "Serwer VOD PL"
+            elif not en_overview_fallback:
+                en_overview_fallback = xt_plot
+
+        if not res["poster"]:
+            res["poster"] = (
+                xtream_info.get("movie_image")
+                or xtream_info.get("cover_big")
+                or xtream_info.get("cover")
             )
-            rd = requests.get(det_url, timeout=4)
-            if rd.status_code == 200:
-                det_data = rd.json() or {}
-                if not overview:
-                    overview = (det_data.get("overview") or "").strip()
-                if not poster_path:
-                    poster_path = det_data.get("poster_path")
-                if not backdrop_path:
-                    backdrop_path = det_data.get("backdrop_path")
-                genres_list = [
-                    g.get("name") for g in (det_data.get("genres") or []) if g.get("name")
-                ]
-                if m_type == "movie":
-                    rt_m = det_data.get("runtime")
-                    if rt_m:
-                        runtime_str = f"{rt_m} min"
-                else:
-                    s_cnt = det_data.get("number_of_seasons")
-                    e_cnt = det_data.get("number_of_episodes")
-                    if s_cnt:
-                        seasons_count = f"Sezony: {s_cnt}" + (f" ({e_cnt} odc.)" if e_cnt else "")
-                    ep_rt = det_data.get("episode_run_time") or []
-                    if ep_rt:
-                        runtime_str = f"~{ep_rt[0]} min/odc."
+        if not res["genres"] and xtream_info.get("genre"):
+            res["genres"] = translate_to_polish_free(str(xtream_info.get("genre")))
+        if not res["cast"] and (xtream_info.get("cast") or xtream_info.get("actors")):
+            res["cast"] = strip_unwanted_chars(xtream_info.get("cast") or xtream_info.get("actors"))
+        if not res["director"] and xtream_info.get("director"):
+            res["director"] = strip_unwanted_chars(xtream_info.get("director"))
+        if not res["year"]:
+            res["year"] = str(xtream_info.get("releasedate") or xtream_info.get("releaseDate") or "")[:4]
+        if not res["rating"] and xtream_info.get("rating"):
+            res["rating"] = str(xtream_info.get("rating"))
 
-                credits = det_data.get("credits") or {}
-                cast_raw = credits.get("cast") or []
-                cast_list = [c.get("name") for c in cast_raw[:6] if c.get("name")]
-                crew_raw = credits.get("crew") or []
-                directors = [
-                    c.get("name")
-                    for c in crew_raw
-                    if c.get("job") in ("Director", "Series Director", "Creator") and c.get("name")
-                ]
-                if not directors and det_data.get("created_by"):
-                    directors = [c.get("name") for c in det_data.get("created_by") if c.get("name")]
-                if directors:
-                    director_str = ", ".join(directors[:2])
+    # 3. Jeśli nadal brak polskiego opisu -> szukamy w Polskiej Wikipedii
+    if not res["plot"]:
+        wiki_plot = fetch_polish_wikipedia_plot(candidate_queries, media_hint=media_hint)
+        if wiki_plot:
+            res["plot"] = wiki_plot
+            res["plot_source"] = "Wikipedia PL"
 
-        # Fallback do opisu angielskiego jeśli polski opis w TMDB jest pusty
-        if not overview and tmdb_id:
-            en_url = f"https://api.themoviedb.org/3/{m_type}/{tmdb_id}?api_key={TMDB_API_KEY}&language=en-US"
-            ren = requests.get(en_url, timeout=3)
-            if ren.status_code == 200:
-                overview = (ren.json().get("overview") or "").strip()
+    # 4. Jeśli nadal brak polskiego opisu, a mamy opis angielski z TMDB/Xtream -> tłumaczymy na PL
+    if not res["plot"] and en_overview_fallback:
+        translated_plot = translate_to_polish_free(en_overview_fallback)
+        if translated_plot:
+            res["plot"] = translated_plot
+            res["plot_source"] = "TMDB / Tłumaczenie PL"
 
-        res = {
-            "title_pl": best.get("title") or best.get("name") or clean_title,
-            "original_title": best.get("original_title") or best.get("original_name") or "",
-            "poster": f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None,
-            "backdrop": f"https://image.tmdb.org/t/p/w780{backdrop_path}" if backdrop_path else None,
-            "plot": overview,
-            "rating": str(round(best.get("vote_average", 0), 1)) if best.get("vote_average") else "",
-            "votes": str(best.get("vote_count", "")) if best.get("vote_count") else "",
-            "year": release[:4] if release else "",
-            "genres": ", ".join(genres_list[:4]),
-            "cast": ", ".join(cast_list),
-            "director": director_str,
-            "runtime": runtime_str,
-            "seasons_info": seasons_count,
-        }
+    # 5. Jeśli nadal brak opisu lub plakatu -> odpytujemy TVMaze API (z tłumaczeniem na PL)
+    if not res["plot"] or not res["poster"]:
+        tvm = fetch_tvmaze_details(candidate_queries)
+        if tvm:
+            if not res["plot"] and tvm.get("plot"):
+                res["plot"] = tvm["plot"]
+                res["plot_source"] = "TVMaze PL"
+            if not res["poster"] and tvm.get("poster"):
+                res["poster"] = tvm["poster"]
+            if not res["rating"] and tvm.get("rating"):
+                res["rating"] = tvm["rating"]
+            if not res["year"] and tvm.get("year"):
+                res["year"] = tvm["year"]
+            if not res["genres"] and tvm.get("genres"):
+                res["genres"] = tvm["genres"]
+
+    if res["plot"]:
         tmdb_memory_cache[cache_key] = res
-        return res
-    except Exception:
-        pass
-    return None
+    return res
 
 
 class XtreamClient:
@@ -329,6 +619,9 @@ class XtreamClient:
             "series": "get_series_categories",
         }[kind]
         raw_cats = self._api({"action": action}) or []
+        for c in raw_cats:
+            if c.get("category_name"):
+                c["category_name"] = strip_unwanted_chars(c["category_name"])
         self.pl_cat_ids[kind] = {
             str(c.get("category_id", ""))
             for c in raw_cats
@@ -346,6 +639,11 @@ class XtreamClient:
         if category_id and category_id not in ("__ALL__", "__RECENT__", "__CATCHUP__"):
             params["category_id"] = category_id
         raw_streams = self._api(params, timeout=24) or []
+        for s in raw_streams:
+            if s.get("name"):
+                s["name"] = clean_display_name(s["name"])
+            if s.get("title"):
+                s["title"] = clean_display_name(s["title"])
         if category_id == "__CATCHUP__":
             raw_streams = [
                 s for s in raw_streams if parse_int_safe(s.get("tv_archive"), 0) == 1
@@ -378,18 +676,18 @@ class XtreamClient:
             return cached[1]
         try:
             data = self._api(
-                {"action": "get_short_epg", "stream_id": stream_id, "limit": 3},
+                {"action": "get_short_epg", "stream_id": stream_id, "limit": 4},
                 timeout=4,
             )
             listings = data.get("epg_listings", []) if isinstance(data, dict) else []
             parsed = []
-            for el in listings[:3]:
+            for el in listings[:4]:
                 title = decode_b64_safe(el.get("title", ""))
                 desc = decode_b64_safe(el.get("description", ""))
                 start_t = (el.get("start") or "")[11:16]
                 end_t = (el.get("end") or "")[11:16]
                 if title:
-                    line_str = f"🕒 {start_t} - {end_t}  •  {title}"
+                    line_str = f"🕒 {start_t} - {end_t} | {title}"
                     if desc:
                         line_str += f"\n{desc}"
                     parsed.append(line_str.strip())
@@ -476,12 +774,13 @@ class M3UClient:
 
             url = line
             attrs = dict(attr_re.findall(extinf_line)) if extinf_line else {}
-            name = (
+            raw_name = (
                 extinf_line.split(",", 1)[1].strip()
                 if (extinf_line and "," in extinf_line)
                 else f"Kanał {seq_id}"
             )
-            group = (attrs.get("group-title") or "Bez kategorii").strip()
+            name = clean_display_name(raw_name)
+            group = strip_unwanted_chars(attrs.get("group-title") or "Bez kategorii")
             logo = attrs.get("tvg-logo") or ""
             catchup = 1 if (attrs.get("catchup") or attrs.get("tvg-rec")) else 0
             kind, ep_match = self._classify_entry(url, group, name)
@@ -604,21 +903,21 @@ def build_special_top_categories(kind: str, raw_cats: list) -> list:
     top = [
         {
             "category_id": "__ALL__",
-            "category_name": "🔥 WSZYSTKIE (🇵🇱 Polskie na górze)",
+            "category_name": "WSZYSTKIE (Polskie na górze)",
         }
     ]
     if kind == "live":
         top.append(
             {
                 "category_id": "__CATCHUP__",
-                "category_name": "⏱ KANAŁY Z ARCHIWUM (CATCH UP)",
+                "category_name": "KANAŁY Z ARCHIWUM (CATCH UP)",
             }
         )
     if kind in ("vod", "series"):
         top.append(
             {
                 "category_id": "__RECENT__",
-                "category_name": "🆕 OSTATNIO DODANE (NOWOŚCI NA GÓRZE)",
+                "category_name": "OSTATNIO DODANE (NOWOŚCI NA GÓRZE)",
             }
         )
     return top + raw_cats
@@ -683,6 +982,7 @@ def main(page: ft.Page):
             "preview_seq": 0,
             "detail_seq": 0,
             "osd_hide_seq": 0,
+            "zap_banner_seq": 0,
             "num_buffer": "",
             "num_seq": 0,
             "last_back_press_ts": 0.0,
@@ -702,7 +1002,7 @@ def main(page: ft.Page):
                 "processed_ids": [],
                 "auto_vlc": False,
                 "use_native_video_ctrl": bool(HAS_FLET_VIDEO_PKG),
-                "auto_launch_vlc_on_zap": True,
+                "auto_launch_vlc_on_zap": False,
                 "auto_login": True,
                 "only_pl": False,
                 "vlc_mode": "vlc_clean",
@@ -815,7 +1115,7 @@ def main(page: ft.Page):
         processed_ids = set(cache_get("processed_ids", []))
         auto_vlc_saved = cache_get("auto_vlc", False)
         use_native_vid_saved = cache_get("use_native_video_ctrl", bool(HAS_FLET_VIDEO_PKG))
-        auto_vlc_zap_saved = cache_get("auto_launch_vlc_on_zap", True)
+        auto_vlc_zap_saved = cache_get("auto_launch_vlc_on_zap", False)
         auto_login_saved = cache_get("auto_login", True)
         only_pl_saved = cache_get("only_pl", False)
         saved_vlc_mode = cache_get("vlc_mode", "vlc_clean")
@@ -823,10 +1123,10 @@ def main(page: ft.Page):
 
         VLC_MODE_ORDER = ["vlc_clean", "intent", "vlc_full", "http"]
         VLC_MODE_LABELS = {
-            "vlc_clean": "🔧 Tryb VLC: vlc:// (Czysty)",
-            "intent": "🔧 Tryb VLC: Android Intent",
-            "vlc_full": "🔧 Tryb VLC: vlc://http://",
-            "http": "🔧 Tryb VLC: Standard HTTP",
+            "vlc_clean": "Tryb VLC: vlc:// (Czysty)",
+            "intent": "Tryb VLC: Android Intent",
+            "vlc_full": "Tryb VLC: vlc://http://",
+            "http": "Tryb VLC: Standard HTTP",
         }
         if saved_vlc_mode not in VLC_MODE_LABELS:
             saved_vlc_mode = "vlc_clean"
@@ -983,9 +1283,9 @@ def main(page: ft.Page):
                     clean_id = re.sub(r"[^a-zA-Z0-9_-]", "", cache_get("device_id", device_id))
                     status_topic = f"iptv_v4_pro_{clean_id}_status"
                     if state["is_playing"]:
-                        st_lbl = "⏸ PAUZA" if state["paused"] else "▶ ODTWARZANIE"
+                        st_lbl = "PAUZA" if state["paused"] else "ODTWARZANIE"
                     else:
-                        st_lbl = "⏹ ZATRZYMANO"
+                        st_lbl = "ZATRZYMANO"
 
                     srv_txt = (
                         state["active_profile_name"]
@@ -1074,11 +1374,11 @@ def main(page: ft.Page):
             box.data["text_ctrl"].value = new_text
 
         clock_txt = ft.Text("00:00", size=28, weight=ft.FontWeight.BOLD, color="#f4f4f5")
-        date_txt = ft.Text("Sunday, 18 Oct 2026", size=12, color="#a1a1aa")
+        date_txt = ft.Text("Monday, 19 Oct 2026", size=12, color="#a1a1aa")
         footer_playlist_txt = ft.Text("Current Playlist: Brak", size=12, color="#a1a1aa")
-        footer_expire_txt = ft.Text(f"Expire: Unlimited  •  ID: {device_id}", size=12, color="#a1a1aa")
+        footer_expire_txt = ft.Text(f"Expire: Unlimited | ID: {device_id}", size=12, color="#a1a1aa")
         dash_back_hint_txt = ft.Text(
-            "Pilot: Strzałki = wybór | OK = zatwierdź | 2x WSTECZ lub 🚪 ZAMKNIJ = wyjdź",
+            "Pilot: Strzałki = wybór | OK = zatwierdź | 2x WSTECZ lub ZAMKNIJ = wyjdź",
             size=12,
             color="#d4d4d8",
             weight=ft.FontWeight.BOLD,
@@ -1087,7 +1387,7 @@ def main(page: ft.Page):
         def update_vivo_footer():
             cur_id = cache_get("device_id", device_id)
             footer_playlist_txt.value = f"Current Playlist: {state.get('active_profile_name') or 'Domyślna'}"
-            footer_expire_txt.value = f"Playlist Expire Date: {state.get('exp_date_str') or 'Unlimited'}  •  Cloud ID: {cur_id}"
+            footer_expire_txt.value = f"Playlist Expire Date: {state.get('exp_date_str') or 'Unlimited'} | Cloud ID: {cur_id}"
 
         def update_clock_loop():
             while not stop_event.is_set():
@@ -1130,7 +1430,7 @@ def main(page: ft.Page):
             color="#a1a1aa",
         )
         status_info_sub = ft.Text(
-            "Najedź na pozycję po lewej stronie, aby wyświetlić opis i program TV (EPG).\nKliknij OK na filmie lub serialu, aby otworzyć pełną stronę z opisem, obsadą i oceną!",
+            "Najedź na pozycję po lewej stronie, aby wyświetlić polski opis i program TV (EPG).\nKliknij OK na filmie lub serialu, aby otworzyć pełną kartę z opisem PL, obsadą i oceną!",
             size=14,
             color="#d4d4d8",
             max_lines=9,
@@ -1197,7 +1497,7 @@ def main(page: ft.Page):
         )
 
         now_playing_txt = ft.Text(
-            "▶ Pilot: OK na filmie/serialu = Pełna strona z opisem  |  OK na kanale TV = Oglądaj (⬆️/⬇️ zmiana kanału)",
+            "▶ Pilot: OK na filmie/serialu = Pełny polski opis | OK na kanale TV = Oglądaj (⬆️/⬇️ zmiana kanału bez wychodzenia)",
             weight=ft.FontWeight.BOLD,
             size=13,
             color="#a1a1aa",
@@ -1205,10 +1505,10 @@ def main(page: ft.Page):
         header_dev_lbl = ft.Text(f"📺 {device_name} [{device_id}]", size=12, color="#a1a1aa", weight=ft.FontWeight.BOLD)
         list_header_lbl = ft.Text("📂 LISTA KATEGORII", size=13, weight=ft.FontWeight.BOLD, color="#e4e4e7")
         list_column = ft.Column(spacing=5, expand=True)
-        status_banner = ft.Text(f"🟢 Zdalny Cloud aktywny — Kod ID: {device_id}", color="#a1a1aa", size=13)
+        status_banner = ft.Text(f"🟢 Zdalny Cloud aktywny - Kod ID: {device_id}", color="#a1a1aa", size=13)
 
         # =====================================================================
-        # DEDYKOWANA STRONA SZCZEGÓŁÓW FILMU I SERIALU (PEŁNY OPIS, OBSADA, TMDB)
+        # DEDYKOWANA STRONA SZCZEGÓŁÓW FILMU I SERIALU (WIELOŹRÓDŁOWY OPIS PL)
         # =====================================================================
         detail_poster_img = ft.Image(
             src="",
@@ -1233,7 +1533,7 @@ def main(page: ft.Page):
         detail_director_txt = ft.Text("", size=13, color="#a1a1aa")
         detail_cast_txt = ft.Text("", size=13, color="#a1a1aa", max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
         detail_plot_txt = ft.Text(
-            "⏳ Pobieranie pełnego polskiego opisu fabuły oraz informacji o obsadzie...",
+            "⏳ Pobieranie pełnego polskiego opisu fabuły (TMDB PL / Wikipedia PL / Serwer VOD / Auto-Translator)...",
             size=15,
             color="#f4f4f5",
         )
@@ -1265,7 +1565,7 @@ def main(page: ft.Page):
                                             spacing=12,
                                         ),
                                         ft.Text(
-                                            "Pilot: ⬅️ ➡️ Wybór przycisku  |  OK = Zatwierdź  |  WSTECZ = Wróć do listy",
+                                            "Pilot: ⬅️ ➡️ Wybór przycisku | OK = Zatwierdź | WSTECZ = Wróć do listy",
                                             size=13,
                                             color="#a1a1aa",
                                             weight=ft.FontWeight.BOLD,
@@ -1335,7 +1635,7 @@ def main(page: ft.Page):
                 b.bgcolor = "#3f3f46" if is_foc else ("#27272a" if is_primary else "#181a20")
                 b.border = ft.border.all(2.5 if is_foc else 1, "#f4f4f5" if is_foc else "#52525b")
                 b.data["text_ctrl"].color = "#ffffff" if is_foc else "#e4e4e7"
-                b.data["text_ctrl"].value = f"▶  {base_t}" if is_foc else base_t
+                b.data["text_ctrl"].value = f"▶ {base_t}" if is_foc else base_t
             safe_ui_update()
 
         def close_media_detail_page():
@@ -1351,7 +1651,7 @@ def main(page: ft.Page):
             dash_inner_view.visible = True
             state["zone"] = "list"
 
-            title = item.get("name") or item.get("title") or "Serial"
+            title = clean_display_name(item.get("name") or item.get("title") or "Serial")
             uid = get_item_unique_id(item)
             state["active_series_id"] = uid
             state["active_series_title"] = title
@@ -1369,9 +1669,12 @@ def main(page: ft.Page):
                             ep_copy = dict(ep)
                             ep_copy["kind"] = "episode"
                             ep_copy["series_title"] = title
-                            ep_copy["cover"] = ep.get("info", {}).get("movie_image") if isinstance(ep.get("info"), dict) else (item.get("cover") or "")
-                            ep_copy["plot"] = ep.get("info", {}).get("plot") if isinstance(ep.get("info"), dict) else ""
-                            ep_copy["display_title"] = f"S{int(s_num):02d}E{int(ep.get('episode_num', 1)):02d} - {ep.get('title')}"
+                            ep_info = ep.get("info") if isinstance(ep.get("info"), dict) else {}
+                            ep_copy["cover"] = ep_info.get("movie_image") or item.get("cover") or ""
+                            raw_ep_plot = strip_unwanted_chars(ep_info.get("plot") or ep_info.get("overview") or "")
+                            ep_copy["plot"] = translate_to_polish_free(raw_ep_plot) if raw_ep_plot else ""
+                            ep_clean_t = clean_display_name(ep.get("title") or f"Odcinek {ep.get('episode_num', 1)}")
+                            ep_copy["display_title"] = f"S{int(s_num):02d}E{int(ep.get('episode_num', 1)):02d} - {ep_clean_t}"
                             flat_eps.append(ep_copy)
                     state["episodes"] = flat_eps
                     state["view_mode"] = "episodes"
@@ -1385,7 +1688,7 @@ def main(page: ft.Page):
             if not isinstance(item, dict):
                 return
             k = item.get("kind") or state["kind"]
-            title = item.get("display_title") or item.get("name") or item.get("title") or "Pozycja"
+            title = clean_display_name(item.get("display_title") or item.get("name") or item.get("title") or "Pozycja")
             icon_url = item.get("stream_icon") or item.get("cover") or ""
 
             state["detail_item"] = item
@@ -1394,23 +1697,24 @@ def main(page: ft.Page):
             app_state["in_detail_page"] = True
 
             detail_badge_txt.value = (
-                "🎬 KARTA FILMU VOD (OPIS I SZCZEGÓŁY)"
+                "🎬 KARTA FILMU VOD (POLSKI OPIS I SZCZEGÓŁY)"
                 if k == "vod"
-                else ("🎞 KARTA SERIALU (OPIS I SEZONY)" if k == "series" else "🎞 KARTA ODCINKA SERIALU")
+                else ("🎞 KARTA SERIALU (POLSKI OPIS I SEZONY)" if k == "series" else "🎞 KARTA ODCINKA SERIALU")
             )
             detail_title_txt.value = title
             detail_orig_title_txt.value = ""
 
-            pl_tag = "🇵🇱 POLSKA WERSJA   •   " if is_polish_item(item, get_current_pl_cat_ids()) else ""
-            fav_tag = "⭐ W ULUBIONYCH   •   " if is_favorite(item) else ""
+            pl_tag = "🇵🇱 POLSKA WERSJA | " if is_polish_item(item, get_current_pl_cat_ids()) else ""
+            fav_tag = "⭐ W ULUBIONYCH | " if is_favorite(item) else ""
             rt_item = str(item.get("rating") or item.get("rating_5based") or "").strip()
-            detail_meta_row_txt.value = f"{fav_tag}{pl_tag}" + (f"⭐ Ocena: {rt_item}" if rt_item else "⏳ Pobieranie danych z TMDB...")
+            detail_meta_row_txt.value = f"{fav_tag}{pl_tag}" + (f"⭐ Ocena: {rt_item}" if rt_item else "⏳ Pobieranie polskich danych...")
             detail_genres_txt.value = f"📂 Kategoria: {(state.get('active_cat') or {}).get('category_name') or item.get('group') or k.upper()}"
             detail_director_txt.value = ""
             detail_cast_txt.value = ""
             detail_plot_txt.value = (
-                item.get("plot")
-                or "⏳ Pobieranie pełnego polskiego opisu fabuły, obsady oraz oceny z bazy TMDB i serwera VOD..."
+                translate_to_polish_free(item.get("plot"))
+                if item.get("plot")
+                else "⏳ Trwa pobieranie polskiego opisu z wielu źródeł (TMDB PL, Wikipedia PL, TVMaze, Serwer VOD + Auto-Translator)..."
             )
 
             if icon_url and icon_url.startswith("http"):
@@ -1498,16 +1802,10 @@ def main(page: ft.Page):
             media_detail_view.visible = True
             style_detail_buttons()
 
-            # Asynchroniczne dociągnięcie pełnych metadanych z TMDB + serwera Xtream VOD/Series
             app_state["detail_seq"] += 1
             cur_dseq = app_state["detail_seq"]
 
             def _load_full_metadata():
-                tmdb_query_title = item.get("series_title") or title
-                tmdb = fetch_tmdb_details(tmdb_query_title, media_hint=("series" if k == "series" else "movie"))
-                if cur_dseq != app_state["detail_seq"] or stop_event.is_set():
-                    return
-
                 xtream_info = {}
                 if state.get("client"):
                     if k == "vod" and item.get("stream_id"):
@@ -1524,32 +1822,37 @@ def main(page: ft.Page):
                 if cur_dseq != app_state["detail_seq"] or stop_event.is_set():
                     return
 
-                poster_final = (
-                    (tmdb or {}).get("poster")
-                    or xtream_info.get("movie_image")
-                    or xtream_info.get("cover_big")
-                    or xtream_info.get("cover")
-                    or icon_url
+                query_title = item.get("series_title") or title
+                rich = fetch_rich_polish_metadata(
+                    query_title,
+                    media_hint=("series" if k == "series" else "movie"),
+                    xtream_info=xtream_info,
                 )
-                if poster_final and poster_final.startswith("http"):
-                    detail_poster_img.src = poster_final
+
+                if cur_dseq != app_state["detail_seq"] or stop_event.is_set():
+                    return
+
+                poster_final = rich.get("poster") or icon_url
+                if poster_final and str(poster_final).startswith("http"):
+                    detail_poster_img.src = str(poster_final)
                     detail_poster_img.visible = True
 
-                backdrop_final = (tmdb or {}).get("backdrop")
+                backdrop_final = rich.get("backdrop")
                 if not backdrop_final and isinstance(xtream_info.get("backdrop_path"), list) and xtream_info["backdrop_path"]:
                     backdrop_final = xtream_info["backdrop_path"][0]
                 if backdrop_final and str(backdrop_final).startswith("http"):
                     detail_backdrop_img.src = str(backdrop_final)
                     detail_backdrop_img.visible = True
 
-                orig_t = (tmdb or {}).get("original_title") or xtream_info.get("o_name") or ""
+                orig_t = rich.get("original_title") or strip_unwanted_chars(xtream_info.get("o_name") or "")
                 if orig_t and orig_t.lower() != clean_media_title(title).lower():
                     detail_orig_title_txt.value = f"Tytuł oryginalny: {orig_t}"
 
-                year_val = (tmdb or {}).get("year") or str(xtream_info.get("releasedate") or xtream_info.get("releaseDate") or "")[:4]
-                rating_val = (tmdb or {}).get("rating") or str(xtream_info.get("rating") or item.get("rating") or "")
-                runtime_val = (tmdb or {}).get("runtime") or xtream_info.get("duration") or ""
-                seasons_val = xtream_info.get("_seasons_summary") or (tmdb or {}).get("seasons_info") or ""
+                year_val = rich.get("year")
+                rating_val = rich.get("rating") or str(item.get("rating") or "")
+                runtime_val = rich.get("runtime") or strip_unwanted_chars(xtream_info.get("duration") or "")
+                seasons_val = xtream_info.get("_seasons_summary") or rich.get("seasons_info") or ""
+                src_badge = rich.get("plot_source") or ""
 
                 meta_parts = []
                 if is_favorite(item):
@@ -1558,40 +1861,32 @@ def main(page: ft.Page):
                     meta_parts.append("🇵🇱 PL")
                 if year_val:
                     meta_parts.append(f"📅 Rok: {year_val}")
-                if rating_val and str(rating_val) != "0":
-                    meta_parts.append(f"⭐ Ocena TMDB: {rating_val}/10")
+                if rating_val and str(rating_val) not in ("0", "0.0"):
+                    meta_parts.append(f"⭐ Ocena: {rating_val}/10")
                 if runtime_val:
                     meta_parts.append(f"⏱ Czas: {runtime_val}")
                 if seasons_val:
                     meta_parts.append(f"🎞 {seasons_val}")
+                if src_badge:
+                    meta_parts.append(f"📖 Źródło opisu: {src_badge}")
 
-                detail_meta_row_txt.value = "   •   ".join(meta_parts) if meta_parts else "🎬 Pozycja katalogu VOD"
+                detail_meta_row_txt.value = " | ".join(meta_parts) if meta_parts else "🎬 Pozycja katalogu VOD"
 
-                genres_val = (tmdb or {}).get("genres") or xtream_info.get("genre") or ""
-                if genres_val:
-                    detail_genres_txt.value = f"🎭 Gatunek: {genres_val}"
+                if rich.get("genres"):
+                    detail_genres_txt.value = f"🎭 Gatunek: {rich['genres']}"
+                if rich.get("director"):
+                    detail_director_txt.value = f"🎬 Reżyseria / Twórcy: {rich['director']}"
+                if rich.get("cast"):
+                    detail_cast_txt.value = f"👥 Obsada: {rich['cast']}"
 
-                dir_val = (tmdb or {}).get("director") or xtream_info.get("director") or ""
-                if dir_val:
-                    detail_director_txt.value = f"🎬 Reżyseria / Twórcy: {dir_val}"
-
-                cast_val = (tmdb or {}).get("cast") or xtream_info.get("cast") or xtream_info.get("actors") or ""
-                if cast_val:
-                    detail_cast_txt.value = f"👥 Obsada: {cast_val}"
-
-                plot_val = (
-                    (tmdb or {}).get("plot")
-                    or xtream_info.get("plot")
-                    or xtream_info.get("description")
-                    or item.get("plot")
-                    or ""
-                ).strip()
+                plot_val = (rich.get("plot") or "").strip()
                 if plot_val:
                     detail_plot_txt.value = plot_val
                 else:
                     detail_plot_txt.value = (
-                        "Brak szczegółowego opisu fabuły dla tej pozycji w bazie TMDB oraz na serwerze.\n"
-                        "Użyj przycisków poniżej, aby uruchomić odtwarzanie filmu lub wybrać odcinek serialu."
+                        f"Pozycja: {clean_media_title(title)}\n"
+                        "Brak szczegółowego streszczenia w zewnętrznych bazach (TMDB, Wikipedia, TVMaze) oraz na serwerze.\n"
+                        "Wybierz przycisk poniżej, aby odtworzyć wideo lub przejrzeć listę odcinków."
                     )
 
                 safe_ui_update()
@@ -1599,7 +1894,7 @@ def main(page: ft.Page):
             threading.Thread(target=_load_full_metadata, daemon=True).start()
 
         # =====================================================================
-        # PEŁNOEKRANOWY EKRAN KANAŁU Z ZAPPINGIEM (BEZ BŁĘDU UNKNOWN CONTROL: VIDEO)
+        # PEŁNOEKRANOWY EKRAN KANAŁU Z PŁYNNYM ZAPPINGIEM (BEZ WYCHODZENIA)
         # =====================================================================
         video_stage_container = ft.Container(
             expand=True,
@@ -1609,8 +1904,8 @@ def main(page: ft.Page):
 
         stage_logo_img = ft.Image(
             src="",
-            width=150,
-            height=150,
+            width=145,
+            height=145,
             fit=ft.ImageFit.CONTAIN,
             border_radius=14,
             visible=False,
@@ -1623,6 +1918,30 @@ def main(page: ft.Page):
             color="#d4d4d8",
             text_align=ft.TextAlign.CENTER,
             max_lines=5,
+        )
+
+        # Górny banner szybkiego zappingu (pokazuje się przy przełączaniu ⬆️ / ⬇️ bez wychodzenia)
+        zap_banner_title = ft.Text("", size=20, weight=ft.FontWeight.BOLD, color="#ffffff", no_wrap=True)
+        zap_banner_sub = ft.Text("", size=13, color="#d4d4d8", no_wrap=True)
+        zap_top_banner = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Icon(ft.Icons.LIVE_TV if hasattr(ft, "Icons") else None, color="#eab308", size=24),
+                    ft.Column([zap_banner_title, zap_banner_sub], spacing=2, tight=True, expand=True),
+                    ft.Text("⬆️/⬇️ Zmień kanał | OK Lista", size=12, color="#a1a1aa", weight=ft.FontWeight.BOLD),
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=12,
+            ),
+            bgcolor="#D9111318",
+            padding=ft.padding.symmetric(horizontal=20, vertical=12),
+            border_radius=12,
+            border=ft.border.all(1.5, "#eab308"),
+            top=20,
+            left=24,
+            right=260,
+            visible=False,
         )
 
         num_osd_digits_txt = ft.Text("", size=28, weight=ft.FontWeight.BOLD, color="#f4f4f5")
@@ -1638,7 +1957,7 @@ def main(page: ft.Page):
             padding=ft.padding.symmetric(horizontal=20, vertical=12),
             border_radius=12,
             border=ft.border.all(2, "#f4f4f5"),
-            top=24,
+            top=20,
             right=24,
             visible=False,
         )
@@ -1646,7 +1965,7 @@ def main(page: ft.Page):
         mini_osd_num_badge = ft.Text("CH 1", size=14, weight=ft.FontWeight.BOLD, color="#f4f4f5")
         mini_osd_title = ft.Text("", size=20, weight=ft.FontWeight.BOLD, color="#ffffff", no_wrap=True, expand=True)
         mini_osd_epg = ft.Text(
-            "⬆️/⬇️ lub CH+/CH- = Zmień kanał  |  0-9 = Wybierz numer  |  OK = Lista kanałów  |  ➡️ = Poprzedni kanał  |  WSTECZ = Wyjdź",
+            "⬆️/⬇️ lub CH+/CH- = Zmień kanał bez wychodzenia | 0-9 = Numer | OK = Lista kanałów | ➡️ = Poprzedni kanał | WSTECZ = Wyjdź",
             size=13,
             color="#d4d4d8",
             max_lines=2,
@@ -1677,11 +1996,12 @@ def main(page: ft.Page):
                             mini_osd_title,
                             ft.Row(
                                 [
-                                    make_osd_quick_btn("⏮ Poprzedni (⬇️)", lambda: switch_live_channel_relative(-1)),
+                                    make_osd_quick_btn("⏮ Kanał - (⬇️)", lambda: switch_live_channel_relative(-1)),
                                     make_osd_quick_btn("📋 Lista (OK)", lambda: open_osd_channel_overlay()),
-                                    make_osd_quick_btn("⏭ Następny (⬆️)", lambda: switch_live_channel_relative(1)),
+                                    make_osd_quick_btn("⏭ Kanał + (⬆️)", lambda: switch_live_channel_relative(1)),
                                     make_osd_quick_btn("↺ Ostatni (➡️)", lambda: recall_previous_live_channel()),
-                                    make_osd_quick_btn("🚀 Otwórz w VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"]), bg="#3f3f46"),
+                                    make_osd_quick_btn("📋 Playlista VLC (Zapping)", lambda: launch_vlc_category_playlist(), bg="#1e3a8a"),
+                                    make_osd_quick_btn("🚀 VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"]), bg="#3f3f46"),
                                 ],
                                 spacing=6,
                             ),
@@ -1750,7 +2070,7 @@ def main(page: ft.Page):
                                     border=ft.border.all(1, "#52525b"),
                                 ),
                                 ft.Text(
-                                    "⬆️ ⬇️ Wybór kanału  |  ⬅️ ➡️ Zmiana kategorii  |  OK = Przełącz",
+                                    "⬆️ ⬇️ Wybór kanału | ⬅️ ➡️ Zmiana kategorii | OK = Przełącz bez wychodzenia",
                                     size=11,
                                     weight=ft.FontWeight.BOLD,
                                     color="#a1a1aa",
@@ -1777,7 +2097,7 @@ def main(page: ft.Page):
                                     osd_right_epg,
                                     ft.Divider(height=8, color="#3f3f46"),
                                     ft.Text(
-                                        "OK = Przełącz kanał bez wychodzenia   |   0-9 = Wybierz numer   |   WSTECZ = Ukryj listę",
+                                        "OK = Przełącz kanał natychmiast | 0-9 = Wybierz numer | WSTECZ = Ukryj listę",
                                         size=12,
                                         color="#a1a1aa",
                                         weight=ft.FontWeight.BOLD,
@@ -1802,6 +2122,7 @@ def main(page: ft.Page):
             content=ft.Stack(
                 [
                     video_stage_container,
+                    zap_top_banner,
                     mini_osd_bar,
                     channel_osd_overlay,
                     num_osd_box,
@@ -1813,19 +2134,28 @@ def main(page: ft.Page):
             bgcolor="#000000",
         )
 
-        def build_safe_stage_card(ch_num: int, ch_total: int, title: str, item=None):
-            icon_url = (item or {}).get("stream_icon") or (item or {}).get("cover") or ""
-            if icon_url and icon_url.startswith("http"):
-                stage_logo_img.src = icon_url
-                stage_logo_img.visible = True
-            else:
-                stage_logo_img.visible = False
+        def show_zapper_top_banner(ch_num: int, ch_total: int, title: str):
+            zap_banner_title.value = f"📺 {ch_num}. {title}"
+            zap_banner_sub.value = f"Kanał {ch_num} z {max(1, ch_total)} | Przełączono bez wychodzenia"
+            zap_top_banner.visible = True
+            safe_ui_update()
 
-            stage_ch_badge.value = f"📺 AKTYWNY KANAŁ {ch_num} / {max(1, ch_total)}"
-            stage_ch_title.value = title
-            stage_ch_epg.value = "⏳ Pobieranie aktualnego programu TV (EPG)..."
+            app_state["zap_banner_seq"] += 1
+            cur_z = app_state["zap_banner_seq"]
 
-            return ft.Container(
+            def _hide_zb():
+                time.sleep(3.2)
+                if cur_z != app_state["zap_banner_seq"] or stop_event.is_set():
+                    return
+                zap_top_banner.visible = False
+                safe_ui_update()
+
+            threading.Thread(target=_hide_zb, daemon=True).start()
+
+        def ensure_safe_stage_card_mounted():
+            if video_stage_container.data == "safe_card" and video_stage_container.content is not None:
+                return
+            card = ft.Container(
                 content=ft.Column(
                     [
                         ft.Container(
@@ -1850,7 +2180,8 @@ def main(page: ft.Page):
                                 make_osd_quick_btn("⏮ Poprzedni kanał (⬇️)", lambda: switch_live_channel_relative(-1)),
                                 make_osd_quick_btn("📋 Półprzezroczysta lista (OK)", lambda: open_osd_channel_overlay(), bg="#3f3f46"),
                                 make_osd_quick_btn("⏭ Następny kanał (⬆️)", lambda: switch_live_channel_relative(1)),
-                                make_osd_quick_btn("🚀 Otwórz wideo w VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"])),
+                                make_osd_quick_btn("📋 Playlista VLC (Zapping w VLC)", lambda: launch_vlc_category_playlist(), bg="#1e3a8a"),
+                                make_osd_quick_btn("🚀 Otwórz w VLC", lambda: launch_vlc_intent(state["playing_url"], state["now_playing"])),
                             ],
                             alignment=ft.MainAxisAlignment.CENTER,
                             spacing=10,
@@ -1864,6 +2195,21 @@ def main(page: ft.Page):
                 expand=True,
                 padding=30,
             )
+            video_stage_container.content = card
+            video_stage_container.data = "safe_card"
+
+        def update_safe_stage_card_values(ch_num: int, ch_total: int, title: str, item=None):
+            ensure_safe_stage_card_mounted()
+            icon_url = (item or {}).get("stream_icon") or (item or {}).get("cover") or ""
+            if icon_url and icon_url.startswith("http"):
+                stage_logo_img.src = icon_url
+                stage_logo_img.visible = True
+            else:
+                stage_logo_img.visible = False
+
+            stage_ch_badge.value = f"📺 AKTYWNY KANAŁ {ch_num} / {max(1, ch_total)}"
+            stage_ch_title.value = title
+            stage_ch_epg.value = "⏳ Pobieranie aktualnego programu TV (EPG)..."
 
         def schedule_mini_osd_autohide():
             app_state["osd_hide_seq"] += 1
@@ -1889,11 +2235,12 @@ def main(page: ft.Page):
                     if epg_list:
                         first_line = epg_list[0].splitlines()[0]
                         mini_osd_epg.value = (
-                            f"{first_line}   |   ⬆️/⬇️ Zmień kanał  •  0-9 Numer  •  OK Lista kanałów"
+                            f"{first_line} | ⬆️/⬇️ Zmień kanał bez wychodzenia | 0-9 Numer | OK Lista"
                         )
                         stage_ch_epg.value = "\n\n".join(epg_list[:2])
+                        zap_banner_sub.value = first_line
                     else:
-                        stage_ch_epg.value = "Brak danych EPG dla tego kanału.\nUżyj strzałek ⬆️/⬇️ lub cyfr 0-9, aby przełączać kanały, albo naciśnij OK, aby otworzyć listę."
+                        stage_ch_epg.value = "Brak danych EPG dla tego kanału.\nUżyj strzałek ⬆️/⬇️ lub cyfr 0-9, aby przełączać kanały bez wychodzenia, albo naciśnij OK, aby otworzyć listę."
                     safe_ui_update()
 
                 threading.Thread(target=_w, daemon=True).start()
@@ -1904,7 +2251,7 @@ def main(page: ft.Page):
         def update_osd_channel_epg_async(item):
             if not isinstance(item, dict):
                 return
-            nm = item.get("name") or item.get("title") or "Kanał"
+            nm = clean_display_name(item.get("name") or item.get("title") or "Kanał")
             osd_right_title.value = f"📺 {nm}"
             osd_right_epg.value = "⏳ Pobieranie programu TV (EPG)..."
             safe_ui_update()
@@ -1916,7 +2263,7 @@ def main(page: ft.Page):
                     if epg_list:
                         osd_right_epg.value = "\n\n".join(epg_list[:2])
                     else:
-                        osd_right_epg.value = "Brak danych EPG dla tego kanału. Naciśnij OK, aby przełączyć."
+                        osd_right_epg.value = "Brak danych EPG dla tego kanału. Naciśnij OK, aby przełączyć kanał bez wychodzenia."
                     safe_ui_update()
 
                 threading.Thread(target=_epg_w, daemon=True).start()
@@ -1948,7 +2295,7 @@ def main(page: ft.Page):
                 ch = channels[idx]
                 is_foc = (idx == cur_idx)
                 is_now = (get_item_unique_id(ch) == playing_uid)
-                nm = ch.get("name") or ch.get("title") or "Kanał"
+                nm = clean_display_name(ch.get("name") or ch.get("title") or "Kanał")
                 prefix = "▶ " if is_foc else ("🟢 " if is_now else "   ")
                 lbl = f"{idx + 1}. {prefix}{nm}"
 
@@ -1966,7 +2313,7 @@ def main(page: ft.Page):
                     bgcolor="#D93F3F46" if is_foc else ("#9927272A" if is_now else "#8018181B"),
                     border=ft.border.all(2 if is_foc else 1, "#f4f4f5" if is_foc else "#3f3f46"),
                     alignment=ft.alignment.center_left,
-                    on_click=lambda _e, it=ch: select_channel_from_osd(it),
+                    on_click=lambda _e, it=ch: select_channel_from_osd(it, keep_overlay=False),
                 )
                 osd_list_column.controls.append(row_box)
 
@@ -2051,13 +2398,19 @@ def main(page: ft.Page):
             safe_ui_update()
             schedule_mini_osd_autohide()
 
-        def select_channel_from_osd(item):
-            close_osd_channel_overlay()
+        def select_channel_from_osd(item, keep_overlay: bool = False):
+            if not keep_overlay:
+                close_osd_channel_overlay()
             k = item.get("kind") or state["kind"]
             if k == "live":
                 ext = item.get("container_extension", "ts") or "ts"
                 url = state["client"].build_stream_url("live", item.get("stream_id"), ext, item=item)
-                play_stream_url(url, item.get("name") or item.get("title") or "Kanał", item=item)
+                play_stream_url(
+                    url,
+                    clean_display_name(item.get("name") or item.get("title") or "Kanał"),
+                    item=item,
+                    stay_in_osd_overlay=keep_overlay,
+                )
             else:
                 on_stream_click(item)
 
@@ -2073,9 +2426,11 @@ def main(page: ft.Page):
             app_state["osd_list_open"] = False
             app_state["num_buffer"] = ""
             num_osd_box.visible = False
+            zap_top_banner.visible = False
             channel_osd_overlay.visible = False
             fullscreen_player_view.visible = False
             video_stage_container.content = None
+            video_stage_container.data = None
             dash_inner_view.visible = True
             state["zone"] = "list"
             build_full_list_data(keep_idx=True)
@@ -2095,9 +2450,7 @@ def main(page: ft.Page):
                 target_item = ch_list[ch_num - 1]
                 state["osd_idx"] = ch_num - 1
                 num_osd_box.visible = False
-                if app_state["osd_list_open"]:
-                    close_osd_channel_overlay()
-                select_channel_from_osd(target_item)
+                select_channel_from_osd(target_item, keep_overlay=False)
             else:
                 num_osd_preview_txt.value = f"❌ Brak kanału #{ch_num} (dostępne: 1-{len(ch_list)})"
                 safe_ui_update()
@@ -2127,7 +2480,7 @@ def main(page: ft.Page):
             num_osd_digits_txt.value = f"📺 Kanał: {buf}_"
             if 1 <= ch_num <= len(ch_list):
                 cand = ch_list[ch_num - 1]
-                cand_nm = cand.get("name") or cand.get("title") or "Kanał"
+                cand_nm = clean_display_name(cand.get("name") or cand.get("title") or "Kanał")
                 num_osd_preview_txt.value = f"▶ {ch_num}. {cand_nm} (OK = przełącz teraz)"
             else:
                 num_osd_preview_txt.value = f"⚠️ Poza zakresem (1 - {len(ch_list)})"
@@ -2149,9 +2502,7 @@ def main(page: ft.Page):
         def recall_previous_live_channel():
             prev_it = state.get("previous_live_item")
             if prev_it and get_item_unique_id(prev_it) != get_item_unique_id(state.get("current_item")):
-                if app_state["osd_list_open"]:
-                    close_osd_channel_overlay()
-                select_channel_from_osd(prev_it)
+                select_channel_from_osd(prev_it, keep_overlay=False)
             else:
                 mini_osd_bar.visible = True
                 schedule_mini_osd_autohide()
@@ -2168,35 +2519,35 @@ def main(page: ft.Page):
                 return
 
             if "category_name" in item and "stream_id" not in item and "series_id" not in item:
-                cat_nm = item.get("category_name", "Kategoria")
+                cat_nm = strip_unwanted_chars(item.get("category_name", "Kategoria"))
                 poster_img.visible = False
                 info_badge_txt.value = "📁 KATEGORIA"
                 status_info_title.value = cat_nm
-                status_info_meta.value = f"Sekcja: {state['kind'].upper()}  •  Naciśnij OK, aby otworzyć"
+                status_info_meta.value = f"Sekcja: {state['kind'].upper()} | Naciśnij OK, aby otworzyć"
                 status_info_sub.value = (
                     "Przewijaj listę strzałkami ⬆️ ⬇️ na całej wysokości okna.\n"
                     "• W sekcji TV na żywo: OK uruchamia kanał (zmiana kanałów bez wychodzenia: ⬆️/⬇️, CH+/CH-, 0-9).\n"
-                    "• W sekcji Filmy i Seriale: OK otwiera pełną stronę z opisem fabuły, obsadą i oceną TMDB."
+                    "• W sekcji Filmy i Seriale: OK otwiera pełną stronę z polskim opisem fabuły (TMDB, Wikipedia, TVMaze, Translator)."
                 )
                 return
 
             state["current_item"] = item
-            title = item.get("display_title") or item.get("name") or item.get("title") or "Pozycja"
+            title = clean_display_name(item.get("display_title") or item.get("name") or item.get("title") or "Pozycja")
             icon_url = item.get("stream_icon") or item.get("cover") or ""
             k = item.get("kind") or state["kind"]
-            fav_str = "⭐ W ulubionych  •  " if is_favorite(item) else ""
-            pl_str = "🇵🇱 PL  •  " if is_polish_item(item, get_current_pl_cat_ids()) else ""
+            fav_str = "⭐ W ulubionych | " if is_favorite(item) else ""
+            pl_str = "🇵🇱 PL | " if is_polish_item(item, get_current_pl_cat_ids()) else ""
 
             info_badge_txt.value = (
                 "📡 KANAŁ TV NA ŻYWO"
                 if k == "live"
-                else ("🎬 FILM VOD (OK = Karta opisu)" if k == "vod" else "🎞 SERIAL (OK = Karta opisu)")
+                else ("🎬 FILM VOD (OK = Karta polskiego opisu)" if k == "vod" else "🎞 SERIAL (OK = Karta polskiego opisu)")
             )
             status_info_title.value = title
             status_info_meta.value = (
                 f"{fav_str}{pl_str}Naciśnij OK, aby odtworzyć"
                 if k == "live"
-                else f"{fav_str}{pl_str}Naciśnij OK, aby otworzyć pełny opis i szczegóły"
+                else f"{fav_str}{pl_str}Naciśnij OK, aby otworzyć pełny polski opis i szczegóły"
             )
 
             if icon_url and icon_url.startswith("http"):
@@ -2206,9 +2557,9 @@ def main(page: ft.Page):
                 poster_img.visible = False
 
             if item.get("plot"):
-                status_info_sub.value = item["plot"]
+                status_info_sub.value = translate_to_polish_free(item["plot"])
             else:
-                status_info_sub.value = "⏳ Pobieranie informacji o programie / opisu..."
+                status_info_sub.value = "⏳ Pobieranie polskiego opisu / programu EPG..."
 
             app_state["preview_seq"] += 1
             cur_seq = app_state["preview_seq"]
@@ -2226,27 +2577,30 @@ def main(page: ft.Page):
                     if epg_list:
                         status_info_sub.value = "\n\n".join(epg_list)
                     else:
-                        status_info_sub.value = "Brak aktualnych danych EPG dla tego kanału.\nNaciśnij OK, aby uruchomić transmisję."
+                        status_info_sub.value = "Brak aktualnych danych EPG dla tego kanału.\nNaciśnij OK, aby uruchomić transmisję (⬆️/⬇️ przełącza kanały bez wychodzenia)."
                     safe_ui_update()
                 elif k in ("vod", "series", "episode"):
-                    tmdb = fetch_tmdb_details(item.get("series_title") or title, media_hint=("series" if k == "series" else "movie"))
+                    rich = fetch_rich_polish_metadata(
+                        item.get("series_title") or title,
+                        media_hint=("series" if k == "series" else "movie"),
+                    )
                     if cur_seq != app_state["preview_seq"]:
                         return
-                    if tmdb:
-                        if tmdb.get("poster"):
-                            poster_img.src = tmdb["poster"]
+                    if rich and (rich.get("plot") or rich.get("poster")):
+                        if rich.get("poster"):
+                            poster_img.src = rich["poster"]
                             poster_img.visible = True
-                        yr = f"📅 {tmdb['year']}   " if tmdb.get("year") else ""
-                        rt = f"⭐ TMDB: {tmdb['rating']}/10   " if tmdb.get("rating") else ""
-                        gn = f"🎭 {tmdb['genres']}" if tmdb.get("genres") else ""
-                        status_info_meta.value = f"{fav_str}{pl_str}{yr}{rt}{gn}".strip()
-                        plot_preview = tmdb.get("plot") or item.get("plot") or "Brak polskiego opisu fabuły w bazie TMDB."
-                        cast_preview = f"\n👥 Obsada: {tmdb['cast']}" if tmdb.get("cast") else ""
+                        yr = f"📅 {rich['year']} | " if rich.get("year") else ""
+                        rt = f"⭐ {rich['rating']}/10 | " if rich.get("rating") else ""
+                        gn = f"🎭 {rich['genres']} | " if rich.get("genres") else ""
+                        src_b = f"📖 {rich['plot_source']}" if rich.get("plot_source") else ""
+                        status_info_meta.value = f"{fav_str}{pl_str}{yr}{rt}{gn}{src_b}".strip(" |")
+                        plot_preview = rich.get("plot") or "Kliknij OK, aby dociągnąć pełny opis z serwera VOD."
+                        cast_preview = f"\n👥 Obsada: {rich['cast']}" if rich.get("cast") else ""
                         status_info_sub.value = f"{plot_preview}{cast_preview}\n\n👉 Naciśnij OK, aby otworzyć pełną stronę z opisem!"
                     else:
                         status_info_sub.value = (
-                            (item.get("plot") or "Brak dodatkowego opisu w bazie TMDB.")
-                            + "\n\n👉 Naciśnij OK na pilocie, aby otworzyć kartę pozycji."
+                            "Kliknij OK na tej pozycji, aby pobrać szczegółowy opis z serwera dostawcy VOD i przetłumaczyć go na język polski."
                         )
                     safe_ui_update()
 
@@ -2281,9 +2635,9 @@ def main(page: ft.Page):
             state["external_vlc_only"] = not state["external_vlc_only"]
             cache_set("auto_vlc", state["external_vlc_only"])
             now_playing_txt.value = (
-                "🚀 Wybrano: Bezpośredni start VLC (bez ekranu OSD)"
+                "🚀 Wybrano: Bezpośredni start VLC"
                 if state["external_vlc_only"]
-                else "📺 Wybrano: Pełnoekranowy Zapping OSD (⬆️/⬇️, 0-9, lista OK)"
+                else "📺 Wybrano: Pełnoekranowy Zapping OSD (zmiana kanałów ⬆️/⬇️ i 0-9 bez wychodzenia)"
             )
             safe_ui_update()
 
@@ -2291,9 +2645,9 @@ def main(page: ft.Page):
             state["use_native_video_ctrl"] = not state["use_native_video_ctrl"]
             cache_set("use_native_video_ctrl", state["use_native_video_ctrl"])
             now_playing_txt.value = (
-                "🎬 Kontrolka ft.Video WŁĄCZONA (wymaga APK zbudowanego z flet_video)"
+                "🎬 Kontrolka ft.Video WŁĄCZONA (płynna zmiana kanałów w tle)"
                 if state["use_native_video_ctrl"]
-                else "🛡️ Bezpieczny Ekran Zappingu OSD WŁĄCZONY (brak błędu Unknown control: video)"
+                else "🛡️ Bezpieczny Ekran Zappingu OSD WŁĄCZONY"
             )
             safe_ui_update()
 
@@ -2303,7 +2657,7 @@ def main(page: ft.Page):
             now_playing_txt.value = (
                 "🚀 Auto-start VLC przy zmianie kanału: WŁĄCZONY"
                 if state["auto_launch_vlc_on_zap"]
-                else "📺 Auto-start VLC przy zmianie kanału: WYŁĄCZONY (uruchamiaj ręcznie przyciskiem)"
+                else "📺 Auto-start VLC przy zmianie kanału: WYŁĄCZONY (płynny Zapping ⬆️/⬇️ bez wychodzenia z ekranu)"
             )
             safe_ui_update()
 
@@ -2317,7 +2671,7 @@ def main(page: ft.Page):
             uid = get_item_unique_id(cur_item)
             if not uid:
                 return
-            nm = cur_item.get("name") or cur_item.get("title") or "Pozycja"
+            nm = clean_display_name(cur_item.get("name") or cur_item.get("title") or "Pozycja")
             if is_favorite(cur_item):
                 favorites_items = [f for f in favorites_items if get_item_unique_id(f) != uid]
                 now_playing_txt.value = f"⭐ Usunięto z ulubionych: {nm}"
@@ -2373,13 +2727,52 @@ def main(page: ft.Page):
             safe_ui_update()
             threading.Thread(target=lambda: page.launch_url(target_url), daemon=True).start()
 
-        def play_stream_url(url, title, item=None):
+        def launch_vlc_category_playlist():
+            """
+            Generuje wielokanałową playlistę M3U8 dla aktualnej kategorii od bieżącego kanału,
+            dzięki czemu wewnątrz VLC można zmieniać kanały (Następny/Poprzedni) bez wychodzenia!
+            """
+            ch_list = get_active_channel_list()
+            if not ch_list or not state.get("client"):
+                launch_vlc_intent(state.get("playing_url", ""), state.get("now_playing", ""))
+                return
+
+            cur_idx, _, _ = find_channel_index_and_number(state.get("current_item"))
+            ordered_channels = ch_list[cur_idx:] + ch_list[:cur_idx]
+
+            lines = ["#EXTM3U"]
+            for it in ordered_channels[:250]:
+                nm = clean_display_name(it.get("name") or it.get("title") or "Kanał")
+                k = it.get("kind") or state["kind"]
+                ext = it.get("container_extension", "ts" if k == "live" else "mp4") or ("ts" if k == "live" else "mp4")
+                u = state["client"].build_stream_url(k, it.get("stream_id"), ext, item=it)
+                if u:
+                    lines.append(f"#EXTINF:-1,{nm}")
+                    lines.append(u)
+
+            try:
+                m3u_path = os.path.join(tempfile.gettempdir(), "iptv_bp_live_zapping.m3u8")
+                with open(m3u_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(lines))
+                now_playing_txt.value = "📋 Wysłano playlistę kategorii do VLC (przełączaj kanały klawiszami Następny/Poprzedni w VLC)"
+                safe_ui_update()
+                if os.name == "nt":
+                    os.startfile(m3u_path)
+                else:
+                    page.launch_url(f"file://{m3u_path}")
+            except Exception:
+                launch_vlc_intent(state.get("playing_url", ""), state.get("now_playing", ""))
+
+        def play_stream_url(url, title, item=None, stay_in_osd_overlay: bool = False):
+            clean_t = clean_display_name(title)
             prev_curr = state.get("current_item")
             if prev_curr and item and get_item_unique_id(prev_curr) != get_item_unique_id(item):
                 state["previous_live_item"] = prev_curr
 
+            was_already_in_fullscreen = bool(app_state["in_fullscreen_player"])
+
             state["playing_url"] = url
-            state["now_playing"] = title
+            state["now_playing"] = clean_t
             state["current_item"] = item
             state["is_playing"] = True
             state["paused"] = False
@@ -2392,16 +2785,17 @@ def main(page: ft.Page):
                     state["list_idx"] = b_idx
                     break
 
-            now_playing_txt.value = f"▶ Odtwarzanie [{ch_num}/{max(1, ch_total)}]: {title}"
+            now_playing_txt.value = f"▶ Odtwarzanie [{ch_num}/{max(1, ch_total)}]: {clean_t}"
 
-            if state["external_vlc_only"]:
-                launch_vlc_intent(url, title)
+            if state["external_vlc_only"] and not was_already_in_fullscreen:
+                launch_vlc_intent(url, clean_t)
                 publish_status()
                 return
 
+            # Płynne przełączanie strumienia bez wychodzenia z pełnego ekranu
             if state["use_native_video_ctrl"] and VideoControlClass is not None and VideoMediaClass is not None:
                 existing_vid = app_state.get("video_ctrl")
-                if app_state["in_fullscreen_player"] and existing_vid is not None:
+                if was_already_in_fullscreen and existing_vid is not None:
                     switched_in_place = False
                     try:
                         existing_vid.playlist_add(VideoMediaClass(url))
@@ -2423,9 +2817,10 @@ def main(page: ft.Page):
                             )
                             app_state["video_ctrl"] = new_vid
                             video_stage_container.content = new_vid
+                            video_stage_container.data = "native_video"
                         except Exception:
                             app_state["video_ctrl"] = None
-                            video_stage_container.content = build_safe_stage_card(ch_num, ch_total, title, item)
+                            update_safe_stage_card_values(ch_num, ch_total, clean_t, item)
                 else:
                     try:
                         vid_ctrl = VideoControlClass(
@@ -2437,36 +2832,48 @@ def main(page: ft.Page):
                         )
                         app_state["video_ctrl"] = vid_ctrl
                         video_stage_container.content = vid_ctrl
+                        video_stage_container.data = "native_video"
                     except Exception:
                         app_state["video_ctrl"] = None
-                        video_stage_container.content = build_safe_stage_card(ch_num, ch_total, title, item)
+                        update_safe_stage_card_values(ch_num, ch_total, clean_t, item)
             else:
                 app_state["video_ctrl"] = None
-                video_stage_container.content = build_safe_stage_card(ch_num, ch_total, title, item)
+                update_safe_stage_card_values(ch_num, ch_total, clean_t, item)
                 if state["auto_launch_vlc_on_zap"]:
-                    launch_vlc_intent(url, title)
+                    launch_vlc_intent(url, clean_t)
 
             mini_osd_num_badge.value = f"KANAŁ {ch_num} / {max(1, ch_total)}"
-            mini_osd_title.value = f"▶  {title}"
+            mini_osd_title.value = f"▶ {clean_t}"
             mini_osd_epg.value = (
-                "⬆️/⬇️ lub CH+/CH- = Zmień kanał  |  0-9 = Wybierz numer  |  OK = Lista kanałów  |  ➡️ = Poprzedni kanał  |  WSTECZ = Wyjdź"
+                "⬆️/⬇️ lub CH+/CH- = Zmień kanał bez wychodzenia | 0-9 = Wybierz numer | OK = Lista kanałów | ➡️ = Poprzedni | WSTECZ = Wyjdź"
             )
-            mini_osd_bar.visible = True
-            channel_osd_overlay.visible = False
-            app_state["osd_list_open"] = False
+
             app_state["in_detail_page"] = False
             app_state["in_fullscreen_player"] = True
-
             dash_view.visible = False
             dash_inner_view.visible = False
             media_detail_view.visible = False
             fullscreen_player_view.visible = True
+
+            if stay_in_osd_overlay and app_state["osd_list_open"]:
+                channel_osd_overlay.visible = True
+                mini_osd_bar.visible = False
+                render_osd_channel_list()
+            else:
+                app_state["osd_list_open"] = False
+                channel_osd_overlay.visible = False
+                mini_osd_bar.visible = True
+
+            if was_already_in_fullscreen:
+                show_zapper_top_banner(ch_num, ch_total, clean_t)
+
             safe_ui_update()
             update_mini_osd_epg_async(item)
             schedule_mini_osd_autohide()
             publish_status()
 
         def switch_live_channel_relative(step: int):
+            """Przełącza kanał o +1 / -1 bez wychodzenia z aktualnie oglądanego ekranu."""
             streams_list = get_active_channel_list()
             if not streams_list or not state.get("client"):
                 return
@@ -2480,7 +2887,7 @@ def main(page: ft.Page):
             new_pos = (cur_pos + step) % len(streams_list)
             next_item = streams_list[new_pos]
             state["osd_idx"] = new_pos
-            select_channel_from_osd(next_item)
+            select_channel_from_osd(next_item, keep_overlay=app_state["osd_list_open"])
 
         search_menu_buttons = []
         search_tf_input = ft.TextField(
@@ -2507,7 +2914,7 @@ def main(page: ft.Page):
             update_focus_styles()
 
         def execute_global_search(target_kind=None):
-            q_str = (search_tf_input.value or "").strip()
+            q_str = strip_unwanted_chars(search_tf_input.value or "")
             state["search_query"] = q_str
             update_left_search_bar_label()
             app_state["search_open"] = False
@@ -2521,14 +2928,14 @@ def main(page: ft.Page):
                 state["zone"] = "list"
                 open_category({
                     "category_id": "__ALL__",
-                    "category_name": f"🔍 WYNIKI SZUKANIA: '{q_str}' ({target_kind.upper()})",
+                    "category_name": f"WYNIKI SZUKANIA: '{q_str}' ({target_kind.upper()})",
                 })
             else:
                 state["zone"] = "list"
                 if state["view_mode"] == "categories" and q_str:
                     open_category({
                         "category_id": "__ALL__",
-                        "category_name": f"🔍 WYNIKI SZUKANIA: '{q_str}' ({state['kind'].upper()})",
+                        "category_name": f"WYNIKI SZUKANIA: '{q_str}' ({state['kind'].upper()})",
                     })
                 else:
                     build_full_list_data()
@@ -2588,7 +2995,7 @@ def main(page: ft.Page):
                     b.bgcolor = "#3f3f46" if foc else "#1c1f26"
                     b.border = ft.border.all(2.5 if foc else 1, "#f4f4f5" if foc else "#2e323d")
                     b.data["text_ctrl"].color = "white"
-                    b.data["text_ctrl"].value = f"▶  {base_t}" if foc else base_t
+                    b.data["text_ctrl"].value = f"▶ {base_t}" if foc else base_t
                 safe_ui_update()
 
             app_state["style_search_fn"] = style_search_menu
@@ -2714,7 +3121,7 @@ def main(page: ft.Page):
             dash_inner_view.visible = True
             open_category({
                 "category_id": "__CATCHUP__",
-                "category_name": "⏱ KANAŁY Z ARCHIWUM (CATCH UP)",
+                "category_name": "KANAŁY Z ARCHIWUM (CATCH UP)",
             })
             publish_status()
 
@@ -2841,12 +3248,12 @@ def main(page: ft.Page):
 
             def _save(_):
                 nonlocal device_name, device_id
-                device_name = name_in.value.strip() or "Android TV"
+                device_name = strip_unwanted_chars(name_in.value) or "Android TV"
                 device_id = re.sub(r"[^a-zA-Z0-9_-]", "", id_in.value.strip()) or device_id
                 cache_set("device_name", device_name)
                 cache_set("device_id", device_id)
                 header_dev_lbl.value = f"📺 {device_name} [{device_id}]"
-                status_banner.value = f"🟢 Zdalny Cloud aktywny — Kod ID: {device_id}"
+                status_banner.value = f"🟢 Zdalny Cloud aktywny - Kod ID: {device_id}"
                 set_tv_button_text(btn_remote_id, f"🌐 Kod ID Odbiornika: {device_id} ({device_name})")
                 update_vivo_footer()
                 dlg.open = False
@@ -3145,12 +3552,12 @@ def main(page: ft.Page):
             nat_lbl = (
                 "🎬 Silnik ekranu: Kontrolka ft.Video (WŁĄCZONA)"
                 if state["use_native_video_ctrl"]
-                else "🛡️ Silnik ekranu: Bezpieczny OSD (Brak błędu Unknown control: video)"
+                else "🛡️ Silnik ekranu: Bezpieczny OSD"
             )
             zap_vlc_lbl = (
                 "🚀 Auto-uruchamianie VLC przy zmianie kanału: TAK"
                 if state["auto_launch_vlc_on_zap"]
-                else "📺 Auto-uruchamianie VLC przy zmianie kanału: NIE (tylko podgląd OSD)"
+                else "📺 Auto-uruchamianie VLC przy zmianie kanału: NIE (płynny Zapping OSD)"
             )
 
             b_s_fav = make_tv_button(fav_lbl, _act_fav, height=34)
@@ -3193,13 +3600,13 @@ def main(page: ft.Page):
                     b_s_nat,
                     "🎬 Silnik ekranu: Kontrolka ft.Video (WŁĄCZONA)"
                     if state["use_native_video_ctrl"]
-                    else "🛡️ Silnik ekranu: Bezpieczny OSD (Brak błędu Unknown control: video)",
+                    else "🛡️ Silnik ekranu: Bezpieczny OSD",
                 )
                 set_tv_button_text(
                     b_s_zap,
                     "🚀 Auto-uruchamianie VLC przy zmianie kanału: TAK"
                     if state["auto_launch_vlc_on_zap"]
-                    else "📺 Auto-uruchamianie VLC przy zmianie kanału: NIE (tylko podgląd OSD)",
+                    else "📺 Auto-uruchamianie VLC przy zmianie kanału: NIE (płynny Zapping OSD)",
                 )
                 set_tv_button_text(
                     b_s_eng,
@@ -3216,7 +3623,7 @@ def main(page: ft.Page):
                     b.bgcolor = "#3f3f46" if foc else ("#451a1a" if b == b_s_exit else "#1c1f26")
                     b.border = ft.border.all(2.5 if foc else 1, "#f4f4f5" if foc else "#2e323d")
                     b.data["text_ctrl"].color = "white"
-                    b.data["text_ctrl"].value = f"▶  {base_t}" if foc else base_t
+                    b.data["text_ctrl"].value = f"▶ {base_t}" if foc else base_t
                 safe_ui_update()
 
             app_state["style_settings_fn"] = style_settings_menu
@@ -3255,7 +3662,7 @@ def main(page: ft.Page):
         )
 
         btn_detail_right = make_tv_button(
-            "ℹ️ Pełny Opis",
+            "ℹ️ Pełny Opis PL",
             lambda: open_media_detail_page(state.get("current_item")) if state.get("current_item") else None,
             height=42,
             expand=True,
@@ -3292,7 +3699,7 @@ def main(page: ft.Page):
             content=ft.Column(
                 [
                     ft.Row(
-                        [make_iptv_bp_badge(48), ft.Text("IPTV BP  •  V8.6 DARK", size=22, weight=ft.FontWeight.BOLD, color="#e4e4e7")],
+                        [make_iptv_bp_badge(48), ft.Text("IPTV BP | V8.8 DARK", size=22, weight=ft.FontWeight.BOLD, color="#e4e4e7")],
                         alignment=ft.MainAxisAlignment.CENTER,
                         spacing=12,
                     ),
@@ -3446,7 +3853,7 @@ def main(page: ft.Page):
             btn_left_top_search.bgcolor = "#3f3f46" if is_search_foc else "#1c1f26"
             btn_left_top_search.border = ft.border.all(2.5 if is_search_foc else 1, "#f4f4f5" if is_search_foc else "#3f3f46")
             btn_left_top_search.data["text_ctrl"].color = "white"
-            btn_left_top_search.data["text_ctrl"].value = f"▶  {base_s_txt}" if is_search_foc else base_s_txt
+            btn_left_top_search.data["text_ctrl"].value = f"▶ {base_s_txt}" if is_search_foc else base_s_txt
 
             if total == 0:
                 list_column.controls.append(
@@ -3465,7 +3872,7 @@ def main(page: ft.Page):
             for idx in range(start_vis, end_vis):
                 entry = items[idx]
                 is_foc = (state["zone"] == "list" and idx == cur_idx)
-                lbl = f"▶  {entry['label']}" if is_foc else entry["label"]
+                lbl = f"▶ {entry['label']}" if is_foc else entry["label"]
                 btn = ft.Container(
                     content=ft.Row(
                         [
@@ -3503,7 +3910,7 @@ def main(page: ft.Page):
                     item.bgcolor = "#3f3f46" if is_foc else ("#27272a" if i == 5 else ("#451a1a" if i == 7 else "#1c1f26"))
                     item.border = ft.border.all(2.5 if is_foc else 1, "#f4f4f5" if is_foc else "#2e323d")
                     item.data["text_ctrl"].color = "white"
-                    item.data["text_ctrl"].value = f"▶  {base_t}" if is_foc else base_t
+                    item.data["text_ctrl"].value = f"▶ {base_t}" if is_foc else base_t
                 safe_ui_update()
                 return
 
@@ -3598,7 +4005,7 @@ def main(page: ft.Page):
             else:
                 raw = list(state["streams"])
                 act_cat = state.get("active_cat") or {}
-                cat_nm = act_cat.get("category_name", "Lista")
+                cat_nm = strip_unwanted_chars(act_cat.get("category_name", "Lista"))
                 cat_id_str = str(act_cat.get("category_id", ""))
                 cat_is_pl = (
                     cat_id_str not in ("__ALL__", "__RECENT__", "__CATCHUP__")
@@ -3653,18 +4060,18 @@ def main(page: ft.Page):
             for i, item in enumerate(raw):
                 real_num = i + 1
                 if v_mode == "categories":
-                    cn = item.get("category_name", "")
+                    cn = strip_unwanted_chars(item.get("category_name", ""))
                     action_fn = lambda c=item: open_category(c)
                     lbl = f"{real_num}. 📁 {cn}"
                 elif v_mode == "episodes":
-                    et = item.get("display_title") or item.get("title") or "Odcinek"
+                    et = clean_display_name(item.get("display_title") or item.get("title") or "Odcinek")
                     action_fn = lambda ep=item: play_episode(ep)
                     lbl = f"{real_num}. 🎞 {et}"
                 else:
                     fav = "⭐ " if is_favorite(item) else ""
                     pl = "🇵🇱 " if is_polish_item(item, pl_ids) else ""
                     arch = "⏱ " if parse_int_safe(item.get("tv_archive"), 0) == 1 else ""
-                    nm = item.get("name") or item.get("title") or "Pozycja"
+                    nm = clean_display_name(item.get("name") or item.get("title") or "Pozycja")
                     action_fn = lambda it=item: on_stream_click(it)
                     lbl = f"{real_num}. {fav}{pl}{arch}{nm}"
 
@@ -3744,8 +4151,7 @@ def main(page: ft.Page):
 
         def on_stream_click(item):
             k = item.get("kind") or state["kind"]
-            title = item.get("name") or item.get("title") or "Strumień"
-            # Dla filmów VOD oraz Seriali kliknięcie OK na liście otwiera dedykowaną stronę z pełnym opisem!
+            title = clean_display_name(item.get("name") or item.get("title") or "Strumień")
             if k in ("vod", "series"):
                 open_media_detail_page(item)
                 return
@@ -3765,7 +4171,7 @@ def main(page: ft.Page):
                 "add_list",
                 "push_list",
             ) or ("server" in cmd and "username" in cmd) or ("m3u_url" in cmd):
-                prof_name = (
+                prof_name = strip_unwanted_chars(
                     cmd.get("name")
                     or cmd.get("profile_name")
                     or f"Lista {len(profiles) + 1}"
@@ -3819,7 +4225,7 @@ def main(page: ft.Page):
                 delete_saved_profile(target)
 
             elif c_type in ("set_name", "rename", "set_device_name", "save_name"):
-                nn = (cmd.get("device_name") or cmd.get("name") or "").strip()
+                nn = strip_unwanted_chars(cmd.get("device_name") or cmd.get("name") or "")
                 if nn:
                     device_name = nn
                     cache_set("device_name", nn)
@@ -4002,7 +4408,7 @@ def main(page: ft.Page):
                 else:
                     channels = state.get("osd_channels", [])
                     if 0 <= state["osd_idx"] < len(channels):
-                        select_channel_from_osd(channels[state["osd_idx"]])
+                        select_channel_from_osd(channels[state["osd_idx"]], keep_overlay=False)
                 return
 
             if app_state["in_detail_page"] and detail_action_buttons:
@@ -4069,12 +4475,10 @@ def main(page: ft.Page):
                     elif key == "Arrow Up" and channels:
                         state["osd_idx"] = (state["osd_idx"] - 1) % len(channels)
                         render_osd_channel_list()
-                    elif key in ("Page Down", "Channel Down") and channels:
-                        state["osd_idx"] = min(len(channels) - 1, state["osd_idx"] + OSD_VISIBLE_ROWS)
-                        render_osd_channel_list()
-                    elif key in ("Page Up", "Channel Up") and channels:
-                        state["osd_idx"] = max(0, state["osd_idx"] - OSD_VISIBLE_ROWS)
-                        render_osd_channel_list()
+                    elif key in ("Page Down", "Channel Down", "Media Track Previous") and channels:
+                        switch_live_channel_relative(-1)
+                    elif key in ("Page Up", "Channel Up", "Media Track Next") and channels:
+                        switch_live_channel_relative(1)
                     elif key == "Arrow Right":
                         switch_osd_category_relative(1)
                     elif key == "Arrow Left":
