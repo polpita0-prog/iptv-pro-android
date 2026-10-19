@@ -1,128 +1,60 @@
-name: Build IPTV BP Dark APK
-env:
-  # Naprawia "Caught exception: Already watching path: /tmp/flet_flutter_build_..."
-  # oraz zapobiega zabiciu procesu przez brak pamięci RAM (Error: The operation was canceled)
-  GRADLE_OPTS: "-Dorg.gradle.vfs.watch=false -Dorg.gradle.daemon=false -Dorg.gradle.parallel=false -Dorg.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=768m"
-  JAVA_OPTS: "-Xmx3072m"
+name: Build Flet APK
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      GRADLE_OPTS: "-Dorg.gradle.vfs.watch=false -Dorg.gradle.daemon=false -Dorg.gradle.parallel=false -Dorg.gradle.jvmargs=-Xmx3584m -XX:MaxMetaspaceSize=1024m"
+      JAVA_OPTS: "-Xmx3584m"
+
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Setup Java (JDK 17)
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: "temurin"
+          java-version: "17"
 
-      - name: Setup Flutter 3.24.3
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.24.3'
-          channel: 'stable'
-          cache: true
-
-      - name: Accept Android Licenses
+      - name: Install Android SDK 35 & Licenses
         run: |
-          yes | flutter doctor --android-licenses || true
+          yes | sudo /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          sudo /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "platforms;android-34" "build-tools;35.0.0"
 
-      - name: Install Python dependencies
+      - name: Free up disk & memory space (opcjonalnie przyspiesza build)
         run: |
-          python -m pip install --upgrade pip
-          pip install flet==0.24.1 pillow requests urllib3
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f wymagania.txt ]; then pip install -r wymagania.txt; fi
+          sudo swapoff -a
+          sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
 
-      - name: Generuj ciemna stonowana ikone IPTV BP
+      - name: Install Flet and dependencies
         run: |
-          mkdir -p assets
-          python3 -c "
-          import os
-          from PIL import Image, ImageDraw, ImageFont
-          img = Image.new('RGBA', (512, 512), (16, 18, 22, 255))
-          d = ImageDraw.Draw(img)
-          d.rounded_rectangle([16, 16, 496, 496], radius=90, fill='#1c1f26', outline='#52525b', width=12)
-          d.rounded_rectangle([36, 36, 476, 476], radius=74, fill='#121418', outline='#2e323d', width=4)
-          fp = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'
-          f1 = ImageFont.truetype(fp, 120) if os.path.exists(fp) else ImageFont.load_default()
-          f2 = ImageFont.truetype(fp, 130) if os.path.exists(fp) else ImageFont.load_default()
-          d.text((256, 195), 'IPTV', fill='#e4e4e7', anchor='mm', font=f1)
-          d.text((256, 335), 'BP', fill='#71717a', anchor='mm', font=f2)
-          for n in ['icon.png', 'icon_android.png', 'icon_ios.png', 'icon_web.png', 'splash.png', 'splash_android.png']:
-              img.save(os.path.join('assets', n))
-          "
+          pip install --upgrade pip
+          pip install flet requests
+          # Jeśli używasz flet-video, odkomentuj poniższą linię:
+          # pip install flet-video
 
-      - name: Prepare patched Flet template (Gradle + SDK 36 + Android TV VLC)
+      - name: Build Android APK
         run: |
-          git clone --branch 0.24.1 https://github.com/flet-dev/flet-build-template.git /tmp/flet-template
-          cd /tmp/flet-template
-          python3 -c '
-          with open("{{cookiecutter.out_dir}}/pubspec.yaml", "r") as f:
-              pub = f.read()
-          pub = pub.replace("wakelock_plus: ^1.2.5", "wakelock_plus: 1.2.8")
-          pub = pub.replace("package_info_plus: ^8.0.0", "package_info_plus: 8.0.2")
-          with open("{{cookiecutter.out_dir}}/pubspec.yaml", "w") as f:
-              f.write(pub)
-
-          gradle_path = "{{cookiecutter.out_dir}}/android/app/build.gradle"
-          with open(gradle_path, "r") as f:
-              g = f.read()
-          g = g.replace("compileSdkVersion flutter.compileSdkVersion", "compileSdk = 36\n    compileSdkVersion flutter.compileSdkVersion")
-          with open(gradle_path, "w") as f:
-              f.write(g)
-
-          manifest_path = "{{cookiecutter.out_dir}}/android/app/src/main/AndroidManifest.xml"
-          with open(manifest_path, "r") as f:
-              manifest = f.read()
-          queries_patch = """    <queries>
-                  <package android:name="org.videolan.vlc" />
-                  <intent>
-                      <action android:name="android.intent.action.VIEW" />
-                      <data android:scheme="vlc" />
-                  </intent>
-                  <intent>
-                      <action android:name="android.intent.action.VIEW" />
-                      <data android:scheme="http" />
-                  </intent>
-                  <intent>
-                      <action android:name="android.intent.action.VIEW" />
-                      <data android:scheme="https" />
-                  </intent>
-              </queries>
-          </manifest>"""
-          manifest = manifest.replace("</manifest>", queries_patch)
-          with open(manifest_path, "w") as f:
-              f.write(manifest)
-          '
-          git config user.email "builder@localhost"
-          git config user.name "Builder"
-          git commit -am "Fix SDK 36 and Android TV VLC queries"
-
-      - name: Build APK with Flet
-        run: |
-          flet build apk \
-            --project "IPTV BP" \
-            --description "IPTV BP V8.2 DARK Remote Cloud" \
-            --org "com.iptv.bp.dark" \
-            --template /tmp/flet-template \
-            --template-ref 0.24.1 \
-            --verbose
+          flet build apk --no-rich-output --Verbose
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: IPTV-BP-DARK-APK
+          name: iptv-bp-apk
           path: build/apk/*.apk
